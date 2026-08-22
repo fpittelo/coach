@@ -2,12 +2,10 @@
 
 import pytest
 import respx
-import httpx
 from coach_mcp.client import (
     IntervalsClient,
     IntervalsAuthError,
     IntervalsNotFoundError,
-    IntervalsRateLimitError,
 )
 
 
