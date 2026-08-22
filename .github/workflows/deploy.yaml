@@ -1,0 +1,69 @@
+name: Deploy Coach MCP Image
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    types: [closed]
+    branches:
+      - qa
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (dev, qa, prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+
+jobs:
+  build-and-push:
+    name: Build and Push OCI Container
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine Environment & Tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            ENV_TAG="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref_name }}" == "dev" ]; then
+            ENV_TAG="dev"
+          elif [ "${{ github.base_ref }}" == "qa" ]; then
+            ENV_TAG="qa"
+          elif [ "${{ github.base_ref }}" == "main" ]; then
+            ENV_TAG="prod"
+          else
+            ENV_TAG="latest"
+          fi
+          echo "tag=${ENV_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push OCI Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
