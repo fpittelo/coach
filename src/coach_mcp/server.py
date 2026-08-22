@@ -1,6 +1,5 @@
 """Coach MCP Server: FastMCP implementation for Intervals.icu endurance coaching."""
 
-import json
 import logging
 import sys
 from contextlib import asynccontextmanager
