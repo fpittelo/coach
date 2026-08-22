@@ -1,9 +1,8 @@
 """Pydantic v2 input and output models for Coach MCP."""
 
-from datetime import date
 from enum import Enum
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ResponseFormat(str, Enum):
@@ -266,6 +265,17 @@ class ListEventsInput(BaseToolModel):
         description="Event category filter (e.g. 'WORKOUT', 'NOTE', 'TARGET', 'RACE_A', 'RACE_B').",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+
+
+class GetEventInput(BaseToolModel):
+    """Input parameters for retrieving a specific calendar event or workout."""
+
+    event_id: str = Field(..., description="Unique event or planned workout ID.", min_length=1)
+    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
 
 
 class CreateEventInput(BaseToolModel):
