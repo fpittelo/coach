@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from coach_mcp.models import (
     CreateActivityInput,
     CreateEventInput,
-    GetActivityInput,
+    GetEventInput,
     ListActivitiesInput,
     RecordWellnessInput,
     ResponseFormat,
@@ -56,7 +56,7 @@ def test_record_wellness_input_range_validation():
     assert valid_model.readiness == 85.5
 
     with pytest.raises(ValidationError):
-        RecordWellnessInput(date="2026-08-22", readiness=150.0)
+        RecordWellnessInput(date="2026-08-22", readiness=150.0)  # max is 100
 
 
 def test_create_event_dsl():
@@ -69,3 +69,17 @@ def test_create_event_dsl():
     )
     assert "VO2max" in model.name
     assert model.workout_doc is not None
+
+
+def test_get_event_input_defaults():
+    """Test GetEventInput defaults and validation."""
+    model = GetEventInput(event_id="evt_12345")
+    assert model.event_id == "evt_12345"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_get_event_input_requires_event_id():
+    """Test GetEventInput requires a non-empty event_id."""
+    with pytest.raises(ValidationError):
+        GetEventInput(event_id="")
