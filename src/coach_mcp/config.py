@@ -1,6 +1,5 @@
 """Configuration settings for Coach MCP."""
 
-import os
 from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
