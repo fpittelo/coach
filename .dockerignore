@@ -17,5 +17,4 @@ build/
 *.egg-info/
 .dockerignore
 Dockerfile
-README.md
 tests/
