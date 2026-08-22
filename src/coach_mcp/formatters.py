@@ -1,7 +1,7 @@
 """Formatters to render Intervals.icu data into structured JSON and agent-friendly Markdown."""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def to_json_str(data: Any) -> str:
@@ -213,6 +213,7 @@ def format_fitness_summary(wellness_list: List[Dict[str, Any]], fmt_json: bool =
     tsb = ctl - atl if ctl is not None and atl is not None else latest.get("tsb", 0.0)
     ramp_rate = latest.get("rampRate", "N/A")
 
+    # Form interpretation
     if tsb > 25:
         form_status = "Transition / Detraining (TSB > +25)"
     elif 10 <= tsb <= 25:
