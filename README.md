@@ -116,6 +116,75 @@ docker run -d --rm \
 
 ---
 
+## 📦 GitHub Container Registry (GHCR)
+
+Pre-built OCI images are published to the GitHub Container Registry for every push to `dev`, every merged pull request to `qa` or `main`, and on-demand via `workflow_dispatch`.
+
+### Available Tags
+
+| Trigger | Tags |
+| :--- | :--- |
+| Push to `dev` | `ghcr.io/fpittelo/coach:dev`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod`, `ghcr.io/fpittelo/coach:<sha>` |
+| `workflow_dispatch` | `ghcr.io/fpittelo/coach:<environment>`, `ghcr.io/fpittelo/coach:<sha>` (and `latest` for `prod`) |
+
+### Pull the Image
+
+```bash
+# Pull the latest production image
+docker pull ghcr.io/fpittelo/coach:latest
+
+# Pull a specific environment image
+docker pull ghcr.io/fpittelo/coach:dev
+
+# Pull a specific commit
+docker pull ghcr.io/fpittelo/coach:<sha>
+```
+
+### Run the GHCR Image
+
+```bash
+# Stdio mode
+docker run -i --rm \
+  -e INTERVALS_API_KEY="your_api_key" \
+  -e INTERVALS_ATHLETE_ID="0" \
+  ghcr.io/fpittelo/coach:latest
+
+# Streamable HTTP / SSE mode
+docker run -d --rm \
+  -p 8000:8000 \
+  -e MCP_TRANSPORT="streamable_http" \
+  -e MCP_PORT="8000" \
+  -e INTERVALS_API_KEY="your_api_key" \
+  -e INTERVALS_ATHLETE_ID="0" \
+  --name coach-mcp-server \
+  ghcr.io/fpittelo/coach:latest
+```
+
+### GHCR Token Permissions
+
+The `deploy.yaml` workflow authenticates to GHCR using the repository-scoped `GITHUB_TOKEN`. The workflow declares the minimum required permissions:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+- `contents: read` is required to check out the repository.
+- `packages: write` is required to push images to GHCR.
+
+If you pull private GHCR images locally or in another workflow, use a Personal Access Token (PAT) or GitHub App token with the `read:packages` scope:
+
+```bash
+echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin
+```
+
+For public packages, no authentication is required to pull.
+
+---
+
 ## 💻 Local Development & Testing
 
 ```bash

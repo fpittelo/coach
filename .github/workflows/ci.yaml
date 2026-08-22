@@ -7,6 +7,9 @@ on:
     branches: [dev, qa, main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test & Lint
@@ -35,6 +38,14 @@ jobs:
         run: |
           pytest -v --cov=src/coach_mcp tests/
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build OCI Docker Image (Validation)
-        run: |
-          docker build -t coach-mcp:test .
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: coach-mcp:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
