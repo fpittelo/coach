@@ -50,7 +50,7 @@ class IntervalsClient:
         base_url: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
-    ):
+    ) -> None:
         self.api_key = api_key or settings.intervals_api_key
         self.default_athlete_id = athlete_id or settings.intervals_athlete_id
         self.base_url = (base_url or settings.intervals_base_url).rstrip("/")

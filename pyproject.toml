@@ -13,7 +13,7 @@ authors = [
     { name = "Frederic Pitteloud", email = "fpittelo@users.noreply.github.com" },
 ]
 dependencies = [
-    "mcp[cli]>=1.3.0",
+    "mcp[cli]>=2.0.0",
     "httpx>=0.27.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",

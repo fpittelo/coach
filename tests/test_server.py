@@ -1,8 +1,10 @@
-"""Comprehensive tests for Coach MCP FastMCP Server handlers and formatters."""
+"""Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 
 from coach_mcp.client import IntervalsAPIError, IntervalsAuthError, IntervalsNotFoundError
 from coach_mcp.formatters import (
@@ -71,7 +73,7 @@ from coach_mcp.server import (
 
 
 @pytest.fixture
-def mock_ctx():
+def mock_ctx() -> Context:
     """Create a mock MCP Context with lifespan state."""
     ctx = MagicMock()
     ctx.request_context.lifespan_state = {}
@@ -91,13 +93,15 @@ def mock_client():
 
 
 def test_mcp_server_initialization():
-    """Verify FastMCP server instance and attributes."""
-    assert mcp.name == "coach_mcp"
+    """Verify MCPServer instance and attributes."""
+    assert isinstance(mcp, MCPServer)
+    assert mcp.name == "Coach"
 
 
 def test_tools_registered():
-    """Verify all core endurance tools are registered on the FastMCP server."""
-    tool_names = [t.name for t in mcp._tool_manager.list_tools()]
+    """Verify all core endurance tools are registered on the MCPServer."""
+    tools = mcp._tool_manager.list_tools()
+    tool_names = [t.name for t in tools]
 
     expected_tools = [
         "intervals_get_athlete_profile",
@@ -123,6 +127,19 @@ def test_tools_registered():
 
     for expected in expected_tools:
         assert expected in tool_names, f"Expected tool '{expected}' not found in registered tools"
+
+    # Verify strongly-typed annotations are attached to tools
+    annotations_by_name = {t.name: t.annotations for t in tools}
+    profile_annotations = annotations_by_name["intervals_get_athlete_profile"]
+    create_annotations = annotations_by_name["intervals_create_activity"]
+    delete_annotations = annotations_by_name["intervals_delete_activity"]
+    assert isinstance(profile_annotations, ToolAnnotations)
+    assert profile_annotations.read_only_hint is True
+    assert create_annotations is not None
+    assert create_annotations.read_only_hint is False
+    assert create_annotations.idempotent_hint is False
+    assert delete_annotations is not None
+    assert delete_annotations.destructive_hint is True
 
 
 # ---------------------------------------------------------------------------
