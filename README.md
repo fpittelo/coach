@@ -7,6 +7,8 @@
 
 **Coach MCP** is a production-grade Model Context Protocol (MCP) server that empowers Large Language Models (LLMs) to act as intelligent, data-driven endurance sports coaches by interacting seamlessly with the **Intervals.icu** REST API.
 
+> **📖 New to Coach MCP? Start with the [User Guide](docs/user_guide.md) for complete setup, deployment, and client integration instructions.**
+
 ---
 
 ## 🏛️ System Architecture
@@ -37,6 +39,13 @@ graph TD
     LLM <-->|stdio or Streamable HTTP / SSE| MCP_SERVER
     CLIENT <-->|HTTPS Basic Auth API_KEY| INTERVALS
 ```
+
+---
+
+## 📖 Documentation
+
+- **[User Guide](docs/user_guide.md)** — Complete setup, configuration, deployment (local, Docker, Compose), client integration (Claude Desktop, OpenCode, Cursor, generic MCP), tool catalog, and troubleshooting.
+- **[README.md](README.md)** — Project overview, architecture, quick-start snippets, and license (this file).
 
 ---
 
