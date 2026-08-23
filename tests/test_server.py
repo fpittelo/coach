@@ -1,6 +1,5 @@
 """Tests for Coach MCP FastMCP Server registration and tool schemas."""
 
-import pytest
 from coach_mcp.server import mcp
 
 
@@ -11,6 +10,7 @@ def test_mcp_server_initialization():
 
 def test_tools_registered():
     """Verify all core endurance tools are registered on the FastMCP server."""
+    # FastMCP holds registered tools
     tool_names = [t.name for t in mcp._tool_manager.list_tools()]
 
     expected_tools = [

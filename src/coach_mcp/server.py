@@ -1,10 +1,10 @@
 """Coach MCP Server: FastMCP implementation for Intervals.icu endurance coaching."""
 
-import json
 import logging
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -57,7 +57,7 @@ if not logger.handlers:
 
 # Lifespan manager to manage persistent HTTP client
 @asynccontextmanager
-async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
+async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Initialize and teardown server dependencies."""
     logger.info("Initializing Coach MCP Server & Intervals.icu client...")
     client = IntervalsClient()
@@ -79,12 +79,16 @@ mcp = FastMCP(
 def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
     """Retrieve the shared client from lifespan state if available, or create a new one."""
     try:
-        if hasattr(ctx, "request_context") and ctx.request_context and hasattr(ctx.request_context, "lifespan_state"):
+        if (
+            hasattr(ctx, "request_context")
+            and ctx.request_context
+            and hasattr(ctx.request_context, "lifespan_state")
+        ):
             client = ctx.request_context.lifespan_state.get("client")
             if client:
                 return client
-    except Exception:
-        pass
+    except (AttributeError, KeyError, RuntimeError) as exc:
+        logger.debug("Failed to retrieve client from context lifespan: %s", exc)
     return IntervalsClient()
 
 
@@ -104,7 +108,7 @@ def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
     },
 )
 async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Context) -> str:
-    """Retrieve athlete personal profile, resting HR, weight, and general settings from Intervals.icu."""
+    """Retrieve athlete profile, resting HR, weight, and general settings."""
     client = _get_client_from_ctx(ctx)
     try:
         data = await client.get_athlete_profile(params.athlete_id)
@@ -124,7 +128,7 @@ async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Con
     },
 )
 async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Context) -> str:
-    """Retrieve athlete sport settings including FTP, LTHR, Max HR, and power/heartrate training zones."""
+    """Retrieve athlete sport settings: FTP, LTHR, Max HR, and power/HR zones."""
     client = _get_client_from_ctx(ctx)
     try:
         data = await client.get_sport_settings(params.athlete_id)
@@ -149,7 +153,7 @@ async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Conte
     },
 )
 async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -> str:
-    """List activities within a specific date range with duration, distance, average power, HR, and training load (TSS)."""
+    """List activities in a date range with duration, distance, power, HR, and TSS."""
     client = _get_client_from_ctx(ctx)
     try:
         activities = await client.list_activities(
@@ -158,7 +162,9 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
             athlete_id=params.athlete_id,
             limit=params.limit or 50,
         )
-        return format_activities_list(activities, fmt_json=(params.response_format == ResponseFormat.JSON))
+        return format_activities_list(
+            activities, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
     except IntervalsAPIError as exc:
         return f"Error listing activities: {exc}"
 
@@ -174,11 +180,13 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
     },
 )
 async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
-    """Retrieve in-depth activity data: NP, IF, TSS, aerobic/anaerobic training effects, RPE, feel, and power curves."""
+    """Retrieve detailed activity data: NP, IF, TSS, training effects, RPE, feel."""
     client = _get_client_from_ctx(ctx)
     try:
         activity = await client.get_activity(params.activity_id)
-        return format_activity_detail(activity, fmt_json=(params.response_format == ResponseFormat.JSON))
+        return format_activity_detail(
+            activity, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
     except IntervalsAPIError as exc:
         return f"Error fetching activity '{params.activity_id}': {exc}"
 
@@ -194,11 +202,13 @@ async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
     },
 )
 async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: Context) -> str:
-    """Retrieve second-by-second sensor streams (watts, heartrate, cadence, altitude, time, distance)."""
+    """Retrieve second-by-second sensor streams: watts, HR, cadence, altitude, time, distance."""
     client = _get_client_from_ctx(ctx)
     try:
         streams = await client.get_activity_streams(params.activity_id, params.types)
-        return format_activity_streams(streams, fmt_json=(params.response_format == ResponseFormat.JSON))
+        return format_activity_streams(
+            streams, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
     except IntervalsAPIError as exc:
         return f"Error fetching streams for activity '{params.activity_id}': {exc}"
 
@@ -214,7 +224,7 @@ async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: C
     },
 )
 async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ctx: Context) -> str:
-    """Retrieve detected work and recovery intervals with average power, HR, cadence, and duration."""
+    """Retrieve detected work and recovery intervals with power, HR, cadence, and duration."""
     client = _get_client_from_ctx(ctx)
     try:
         intervals_data = await client.get_activity_intervals(params.activity_id)
@@ -272,9 +282,9 @@ async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -
     },
 )
 async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -> str:
-    """Update title, subjective feel (1-5), RPE (1-10), training load, or athlete notes on an existing activity."""
+    """Update activity title, feel (1-5), RPE (1-10), training load, or notes."""
     client = _get_client_from_ctx(ctx)
-    payload: Dict[str, Any] = {}
+    payload: dict[str, Any] = {}
     if params.name:
         payload["name"] = params.name
     if params.description is not None:
@@ -329,10 +339,12 @@ async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -
     },
 )
 async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
-    """Retrieve daily resting HR, HRV (rMSSD), sleep duration/quality, subjective readiness, fatigue, and soreness."""
+    """Retrieve daily wellness: resting HR, HRV, sleep, readiness, fatigue, and soreness."""
     client = _get_client_from_ctx(ctx)
     try:
-        data = await client.get_wellness(oldest=params.oldest, newest=params.newest, athlete_id=params.athlete_id)
+        data = await client.get_wellness(
+            oldest=params.oldest, newest=params.newest, athlete_id=params.athlete_id
+        )
         return format_wellness_list(data, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
         return f"Error fetching wellness records: {exc}"
@@ -349,9 +361,9 @@ async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
     },
 )
 async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -> str:
-    """Record or update daily wellness metrics (resting HR, HRV, sleep, readiness, fatigue, soreness, weight)."""
+    """Record or update daily wellness metrics: HR, HRV, sleep, readiness, fatigue, weight."""
     client = _get_client_from_ctx(ctx)
-    payload: Dict[str, Any] = {}
+    payload: dict[str, Any] = {}
     for key in (
         "restingHR",
         "hrv",
@@ -388,7 +400,7 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
     },
 )
 async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Context) -> str:
-    """Calculate and summarize Chronic Training Load (CTL / Fitness), Acute Training Load (ATL / Fatigue), and Training Stress Balance (TSB / Form)."""
+    """Calculate and summarize CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
     client = _get_client_from_ctx(ctx)
     try:
         wellness_data = await client.get_wellness(
@@ -396,7 +408,9 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
             newest=params.newest,
             athlete_id=params.athlete_id,
         )
-        return format_fitness_summary(wellness_data, fmt_json=(params.response_format == ResponseFormat.JSON))
+        return format_fitness_summary(
+            wellness_data, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
     except IntervalsAPIError as exc:
         return f"Error calculating fitness summary: {exc}"
 
@@ -454,7 +468,8 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         lines = [
             f"# Scheduled Workout: {name} (ID: {params.event_id})",
             f"- **Date**: {date_str}",
-            f"- **Type**: {event.get('type', 'Ride')} | **Category**: {event.get('category', 'WORKOUT')}",
+            f"- **Type**: {event.get('type', 'Ride')} | "
+            f"**Category**: {event.get('category', 'WORKOUT')}",
             f"- **Planned Load**: {event.get('icu_training_load', 'N/A')}",
             "",
             "## Structured Workout Steps (DSL)",
@@ -478,9 +493,9 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
     },
 )
 async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
-    """Schedule a new structured workout or calendar event using Intervals.icu workout DSL syntax."""
+    """Schedule a new structured workout or calendar event using workout DSL syntax."""
     client = _get_client_from_ctx(ctx)
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "start_date_local": params.start_date_local,
         "name": params.name,
         "type": params.type,
@@ -515,7 +530,7 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
 async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
     """Update date, description, title, or structured workout steps on a scheduled event."""
     client = _get_client_from_ctx(ctx)
-    payload: Dict[str, Any] = {}
+    payload: dict[str, Any] = {}
     if params.start_date_local:
         payload["start_date_local"] = params.start_date_local
     if params.name:
@@ -595,7 +610,9 @@ async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> st
     """List reusable workout templates from the Intervals.icu library."""
     client = _get_client_from_ctx(ctx)
     try:
-        workouts = await client.list_workouts(folder_id=params.folder_id, athlete_id=params.athlete_id)
+        workouts = await client.list_workouts(
+            folder_id=params.folder_id, athlete_id=params.athlete_id
+        )
         return format_workouts(workouts, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
         return f"Error listing workouts: {exc}"
@@ -604,7 +621,10 @@ async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> st
 def main() -> None:
     """Run Coach MCP Server in stdio or streamable_http transport mode."""
     if settings.mcp_transport in ("streamable_http", "sse"):
-        logger.info(f"Starting Coach MCP Server on {settings.mcp_host}:{settings.mcp_port} ({settings.mcp_transport})...")
+        logger.info(
+            f"Starting Coach MCP Server on {settings.mcp_host}:{settings.mcp_port} "
+            f"({settings.mcp_transport})..."
+        )
         mcp.run(transport=settings.mcp_transport, host=settings.mcp_host, port=settings.mcp_port)
     else:
         logger.info("Starting Coach MCP Server on stdio...")

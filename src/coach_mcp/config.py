@@ -1,7 +1,7 @@
 """Configuration settings for Coach MCP."""
 
-import os
 from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     )
     intervals_athlete_id: str = Field(
         default="0",
-        description="Intervals.icu athlete ID ('0' for authenticated user, or specific ID 'iXXXXX').",
+        description=(
+            "Intervals.icu athlete ID ('0' for authenticated user, "
+            "or specific ID 'iXXXXX')."
+        ),
         validation_alias="INTERVALS_ATHLETE_ID",
     )
     intervals_base_url: str = Field(

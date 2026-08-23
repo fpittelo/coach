@@ -1,6 +1,7 @@
 """Test configuration and fixtures for Coach MCP."""
 
 import pytest
+
 from coach_mcp.client import IntervalsClient
 from coach_mcp.config import Settings
 

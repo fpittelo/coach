@@ -1,12 +1,11 @@
 """Pydantic v2 input and output models for Coach MCP."""
 
-from datetime import date
-from enum import Enum
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ResponseFormat(str, Enum):
+class ResponseFormat(StrEnum):
     """Output format for tool responses."""
 
     MARKDOWN = "markdown"
@@ -31,7 +30,7 @@ class BaseToolModel(BaseModel):
 class GetAthleteProfileInput(BaseToolModel):
     """Input parameters for fetching athlete profile."""
 
-    athlete_id: Optional[str] = Field(
+    athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
     )
@@ -44,7 +43,7 @@ class GetAthleteProfileInput(BaseToolModel):
 class GetSportSettingsInput(BaseToolModel):
     """Input parameters for fetching athlete sport settings & zones."""
 
-    athlete_id: Optional[str] = Field(
+    athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self).",
     )
@@ -72,11 +71,11 @@ class ListActivitiesInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD (e.g. '2026-08-22').",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: Optional[str] = Field(
+    athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self).",
     )
-    limit: Optional[int] = Field(
+    limit: int | None = Field(
         default=50,
         description="Maximum number of activities to return (1-100).",
         ge=1,
@@ -110,9 +109,12 @@ class GetActivityStreamsInput(BaseToolModel):
         description="Unique activity ID.",
         min_length=1,
     )
-    types: Optional[List[str]] = Field(
+    types: list[str] | None = Field(
         default_factory=lambda: ["watts", "heartrate", "cadence", "time", "distance", "altitude"],
-        description="Stream types to retrieve (e.g. watts, heartrate, cadence, time, distance, altitude, temp).",
+        description=(
+            "Stream types to retrieve "
+            "(e.g. watts, heartrate, cadence, time, distance, altitude, temp)."
+        ),
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -137,41 +139,59 @@ class GetActivityIntervalsInput(BaseToolModel):
 class CreateActivityInput(BaseToolModel):
     """Input parameters for manually recording an activity."""
 
-    name: str = Field(..., description="Name of the activity (e.g. 'Morning VO2max Intervals').", min_length=1)
-    type: str = Field(..., description="Activity type (e.g. 'Ride', 'VirtualRide', 'Run', 'Swim', 'WeightTraining').")
+    name: str = Field(
+        ..., description="Name of the activity (e.g. 'Morning VO2max Intervals').", min_length=1
+    )
+    type: str = Field(
+        ...,
+        description="Activity type (e.g. 'Ride', 'VirtualRide', 'Run', 'Swim', 'WeightTraining').",
+    )
     start_date_local: str = Field(
         ...,
-        description="Local start timestamp in ISO format 'YYYY-MM-DDTHH:MM:SS' (e.g. '2026-08-22T09:00:00').",
+        description=(
+            "Local start timestamp in ISO format 'YYYY-MM-DDTHH:MM:SS' "
+            "(e.g. '2026-08-22T09:00:00')."
+        ),
     )
     moving_time_seconds: int = Field(..., description="Moving duration in seconds.", ge=1)
-    elapsed_time_seconds: Optional[int] = Field(default=None, description="Total elapsed duration in seconds.", ge=1)
-    distance_meters: Optional[float] = Field(default=None, description="Total distance in meters.", ge=0.0)
-    average_watts: Optional[float] = Field(default=None, description="Average power in Watts.", ge=0.0)
-    average_heartrate: Optional[float] = Field(default=None, description="Average heart rate in BPM.", ge=0.0)
-    icu_training_load: Optional[float] = Field(default=None, description="Training Load / TSS score.", ge=0.0)
-    description: Optional[str] = Field(default=None, description="Detailed activity notes.")
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    elapsed_time_seconds: int | None = Field(
+        default=None, description="Total elapsed duration in seconds.", ge=1
+    )
+    distance_meters: float | None = Field(
+        default=None, description="Total distance in meters.", ge=0.0
+    )
+    average_watts: float | None = Field(default=None, description="Average power in Watts.", ge=0.0)
+    average_heartrate: float | None = Field(
+        default=None, description="Average heart rate in BPM.", ge=0.0
+    )
+    icu_training_load: float | None = Field(
+        default=None, description="Training Load / TSS score.", ge=0.0
+    )
+    description: str | None = Field(default=None, description="Detailed activity notes.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
 
 
 class UpdateActivityInput(BaseToolModel):
     """Input parameters for modifying an existing activity."""
 
     activity_id: str = Field(..., description="Activity ID to update.")
-    name: Optional[str] = Field(default=None, description="Updated activity title.")
-    description: Optional[str] = Field(default=None, description="Updated notes or athlete feedback.")
-    perceived_exertion: Optional[float] = Field(
+    name: str | None = Field(default=None, description="Updated activity title.")
+    description: str | None = Field(default=None, description="Updated notes or athlete feedback.")
+    perceived_exertion: float | None = Field(
         default=None,
         description="Rating of Perceived Exertion (RPE 1-10).",
         ge=1.0,
         le=10.0,
     )
-    feel: Optional[int] = Field(
+    feel: int | None = Field(
         default=None,
         description="Subjective feeling (1=Strong, 2=Good, 3=Normal, 4=Poor, 5=Terrible).",
         ge=1,
         le=5,
     )
-    icu_training_load: Optional[float] = Field(default=None, description="Adjusted training load (TSS).", ge=0.0)
+    icu_training_load: float | None = Field(
+        default=None, description="Adjusted training load (TSS).", ge=0.0
+    )
 
 
 class DeleteActivityInput(BaseToolModel):
@@ -198,8 +218,10 @@ class GetWellnessInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format."
+    )
 
 
 class RecordWellnessInput(BaseToolModel):
@@ -210,19 +232,33 @@ class RecordWellnessInput(BaseToolModel):
         description="Date in ISO format YYYY-MM-DD (e.g. '2026-08-22').",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    restingHR: Optional[int] = Field(default=None, description="Resting Heart Rate in BPM.", ge=30, le=150)
-    hrv: Optional[float] = Field(default=None, description="HRV (rMSSD in ms or SDNN).", ge=0.0)
-    weight: Optional[float] = Field(default=None, description="Weight in kg.", ge=30.0, le=250.0)
-    sleepSecs: Optional[int] = Field(default=None, description="Sleep duration in seconds.", ge=0)
-    sleepQuality: Optional[int] = Field(default=None, description="Sleep quality rating (1=Great, 4=Poor).", ge=1, le=4)
-    readiness: Optional[float] = Field(default=None, description="Overall readiness score (0-100).", ge=0.0, le=100.0)
-    soreness: Optional[int] = Field(default=None, description="Muscle soreness (1=None, 4=Extreme).", ge=1, le=4)
-    fatigue: Optional[int] = Field(default=None, description="Subjective fatigue (1=None, 4=Extreme).", ge=1, le=4)
-    stress: Optional[int] = Field(default=None, description="Life/training stress (1=Low, 4=Extreme).", ge=1, le=4)
-    mood: Optional[int] = Field(default=None, description="Mood rating (1=Great, 4=Poor).", ge=1, le=4)
-    injury: Optional[int] = Field(default=None, description="Injury status (1=None, 4=Injured).", ge=1, le=4)
-    comments: Optional[str] = Field(default=None, description="Notes on sleep, recovery, or health.")
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    restingHR: int | None = Field(
+        default=None, description="Resting Heart Rate in BPM.", ge=30, le=150
+    )
+    hrv: float | None = Field(default=None, description="HRV (rMSSD in ms or SDNN).", ge=0.0)
+    weight: float | None = Field(default=None, description="Weight in kg.", ge=30.0, le=250.0)
+    sleepSecs: int | None = Field(default=None, description="Sleep duration in seconds.", ge=0)
+    sleepQuality: int | None = Field(
+        default=None, description="Sleep quality rating (1=Great, 4=Poor).", ge=1, le=4
+    )
+    readiness: float | None = Field(
+        default=None, description="Overall readiness score (0-100).", ge=0.0, le=100.0
+    )
+    soreness: int | None = Field(
+        default=None, description="Muscle soreness (1=None, 4=Extreme).", ge=1, le=4
+    )
+    fatigue: int | None = Field(
+        default=None, description="Subjective fatigue (1=None, 4=Extreme).", ge=1, le=4
+    )
+    stress: int | None = Field(
+        default=None, description="Life/training stress (1=Low, 4=Extreme).", ge=1, le=4
+    )
+    mood: int | None = Field(default=None, description="Mood rating (1=Great, 4=Poor).", ge=1, le=4)
+    injury: int | None = Field(
+        default=None, description="Injury status (1=None, 4=Injured).", ge=1, le=4
+    )
+    comments: str | None = Field(default=None, description="Notes on sleep, recovery, or health.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
 
 
 class GetFitnessSummaryInput(BaseToolModel):
@@ -238,8 +274,10 @@ class GetFitnessSummaryInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +298,25 @@ class ListEventsInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
-    category: Optional[str] = Field(
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    category: str | None = Field(
         default=None,
         description="Event category filter (e.g. 'WORKOUT', 'NOTE', 'TARGET', 'RACE_A', 'RACE_B').",
     )
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format."
+    )
+
+
+class GetEventInput(BaseToolModel):
+    """Input parameters for retrieving a specific calendar event or workout."""
+
+    event_id: str = Field(..., description="Unique event or planned workout ID.", min_length=1)
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
 
 
 class CreateEventInput(BaseToolModel):
@@ -275,14 +326,20 @@ class CreateEventInput(BaseToolModel):
         ...,
         description="Local start timestamp 'YYYY-MM-DDTHH:MM:SS' (e.g. '2026-08-23T08:00:00').",
     )
-    name: str = Field(..., description="Workout or event title (e.g. 'Over-Unders 3x10min').", min_length=1)
-    type: str = Field(default="Ride", description="Sport type ('Ride', 'Run', 'Swim', 'WeightTraining', etc.).")
+    name: str = Field(
+        ..., description="Workout or event title (e.g. 'Over-Unders 3x10min').", min_length=1
+    )
+    type: str = Field(
+        default="Ride", description="Sport type ('Ride', 'Run', 'Swim', 'WeightTraining', etc.)."
+    )
     category: str = Field(
         default="WORKOUT",
         description="Category ('WORKOUT', 'NOTE', 'TARGET', 'RACE_A', 'RACE_B', 'RACE_C').",
     )
-    description: Optional[str] = Field(default=None, description="Human description or instructions for the workout.")
-    workout_doc: Optional[str] = Field(
+    description: str | None = Field(
+        default=None, description="Human description or instructions for the workout."
+    )
+    workout_doc: str | None = Field(
         default=None,
         description=(
             "Intervals.icu structured workout DSL definition text. Example:\n"
@@ -293,29 +350,35 @@ class CreateEventInput(BaseToolModel):
             "- Cool down 10m 55%"
         ),
     )
-    moving_time_seconds: Optional[int] = Field(default=None, description="Planned duration in seconds.", ge=1)
-    icu_training_load: Optional[float] = Field(default=None, description="Planned TSS / load.", ge=0.0)
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    moving_time_seconds: int | None = Field(
+        default=None, description="Planned duration in seconds.", ge=1
+    )
+    icu_training_load: float | None = Field(default=None, description="Planned TSS / load.", ge=0.0)
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
 
 
 class UpdateEventInput(BaseToolModel):
     """Input parameters for modifying a planned workout or calendar event."""
 
     event_id: str = Field(..., description="ID of the event to update.")
-    start_date_local: Optional[str] = Field(default=None, description="Updated start date/time.")
-    name: Optional[str] = Field(default=None, description="Updated title.")
-    description: Optional[str] = Field(default=None, description="Updated instructions.")
-    workout_doc: Optional[str] = Field(default=None, description="Updated structured workout DSL.")
-    moving_time_seconds: Optional[int] = Field(default=None, description="Updated duration in seconds.", ge=1)
-    icu_training_load: Optional[float] = Field(default=None, description="Updated planned load.", ge=0.0)
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    start_date_local: str | None = Field(default=None, description="Updated start date/time.")
+    name: str | None = Field(default=None, description="Updated title.")
+    description: str | None = Field(default=None, description="Updated instructions.")
+    workout_doc: str | None = Field(default=None, description="Updated structured workout DSL.")
+    moving_time_seconds: int | None = Field(
+        default=None, description="Updated duration in seconds.", ge=1
+    )
+    icu_training_load: float | None = Field(
+        default=None, description="Updated planned load.", ge=0.0
+    )
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
 
 
 class DeleteEventInput(BaseToolModel):
     """Input parameters for deleting a planned event or workout."""
 
     event_id: str = Field(..., description="ID of the event to delete.")
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
 
 
 # ---------------------------------------------------------------------------
@@ -326,13 +389,17 @@ class DeleteEventInput(BaseToolModel):
 class ListFoldersInput(BaseToolModel):
     """Input parameters for listing workout folders in library."""
 
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format."
+    )
 
 
 class ListWorkoutsInput(BaseToolModel):
     """Input parameters for listing workout templates."""
 
-    folder_id: Optional[str] = Field(default=None, description="Filter by folder ID.")
-    athlete_id: Optional[str] = Field(default=None, description="Athlete ID ('0' or None for self).")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN, description="Output format.")
+    folder_id: str | None = Field(default=None, description="Filter by folder ID.")
+    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format."
+    )
