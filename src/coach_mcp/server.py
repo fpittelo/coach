@@ -1,12 +1,13 @@
-"""Coach MCP Server: FastMCP implementation for Intervals.icu endurance coaching."""
+"""Coach MCP Server: MCPServer implementation for Intervals.icu endurance coaching."""
 
 import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal, cast
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
@@ -57,7 +58,7 @@ if not logger.handlers:
 
 # Lifespan manager to manage persistent HTTP client
 @asynccontextmanager
-async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+async def server_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     """Initialize and teardown server dependencies."""
     logger.info("Initializing Coach MCP Server & Intervals.icu client...")
     client = IntervalsClient()
@@ -68,9 +69,9 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         await client.close()
 
 
-# Initialize FastMCP Server
-mcp = FastMCP(
-    name="coach_mcp",
+# Initialize MCPServer
+mcp = MCPServer(
+    "Coach",
     lifespan=server_lifespan,
     dependencies=["httpx", "pydantic", "pydantic-settings"],
 )
@@ -86,7 +87,7 @@ def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
         ):
             client = ctx.request_context.lifespan_state.get("client")
             if client:
-                return client
+                return cast(IntervalsClient, client)
     except (AttributeError, KeyError, RuntimeError) as exc:
         logger.debug("Failed to retrieve client from context lifespan: %s", exc)
     return IntervalsClient()
@@ -99,13 +100,10 @@ def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
 
 @mcp.tool(
     name="intervals_get_athlete_profile",
-    annotations={
-        "title": "Get Athlete Profile",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Athlete Profile",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Context) -> str:
     """Retrieve athlete profile, resting HR, weight, and general settings."""
@@ -119,13 +117,10 @@ async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Con
 
 @mcp.tool(
     name="intervals_get_sport_settings",
-    annotations={
-        "title": "Get Athlete Sport Settings & Zones",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Athlete Sport Settings & Zones",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Context) -> str:
     """Retrieve athlete sport settings: FTP, LTHR, Max HR, and power/HR zones."""
@@ -144,13 +139,10 @@ async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Conte
 
 @mcp.tool(
     name="intervals_list_activities",
-    annotations={
-        "title": "List Athlete Activities",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Athlete Activities",
+        read_only_hint=True,
+    ),
 )
 async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -> str:
     """List activities in a date range with duration, distance, power, HR, and TSS."""
@@ -171,13 +163,10 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
 
 @mcp.tool(
     name="intervals_get_activity",
-    annotations={
-        "title": "Get Activity Details",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Activity Details",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
     """Retrieve detailed activity data: NP, IF, TSS, training effects, RPE, feel."""
@@ -193,13 +182,10 @@ async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_get_activity_streams",
-    annotations={
-        "title": "Get Activity Time Series Streams",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Activity Time Series Streams",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: Context) -> str:
     """Retrieve second-by-second sensor streams: watts, HR, cadence, altitude, time, distance."""
@@ -215,13 +201,10 @@ async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: C
 
 @mcp.tool(
     name="intervals_get_activity_intervals",
-    annotations={
-        "title": "Get Activity Work Intervals",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Activity Work Intervals",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ctx: Context) -> str:
     """Retrieve detected work and recovery intervals with power, HR, cadence, and duration."""
@@ -235,13 +218,11 @@ async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ct
 
 @mcp.tool(
     name="intervals_create_activity",
-    annotations={
-        "title": "Create Manual Activity",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Create Manual Activity",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
 )
 async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -> str:
     """Manually record a completed workout or activity on Intervals.icu."""
@@ -273,13 +254,11 @@ async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -
 
 @mcp.tool(
     name="intervals_update_activity",
-    annotations={
-        "title": "Update Activity Notes and RPE",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Update Activity Notes and RPE",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
 )
 async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -> str:
     """Update activity title, feel (1-5), RPE (1-10), training load, or notes."""
@@ -305,13 +284,11 @@ async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -
 
 @mcp.tool(
     name="intervals_delete_activity",
-    annotations={
-        "title": "Delete Activity",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Activity",
+        read_only_hint=False,
+        destructive_hint=True,
+    ),
 )
 async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -> str:
     """Permanently delete an activity from Intervals.icu."""
@@ -330,13 +307,10 @@ async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -
 
 @mcp.tool(
     name="intervals_get_wellness",
-    annotations={
-        "title": "Get Wellness & Recovery History",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Wellness & Recovery History",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
     """Retrieve daily wellness: resting HR, HRV, sleep, readiness, fatigue, and soreness."""
@@ -352,13 +326,11 @@ async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_record_wellness",
-    annotations={
-        "title": "Record Daily Wellness & Recovery",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Record Daily Wellness & Recovery",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
 )
 async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -> str:
     """Record or update daily wellness metrics: HR, HRV, sleep, readiness, fatigue, weight."""
@@ -391,13 +363,10 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
 
 @mcp.tool(
     name="intervals_get_fitness_summary",
-    annotations={
-        "title": "Get Fitness, Fatigue & Form Summary (CTL/ATL/TSB)",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Fitness, Fatigue & Form Summary (CTL/ATL/TSB)",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Context) -> str:
     """Calculate and summarize CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
@@ -422,13 +391,10 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
 
 @mcp.tool(
     name="intervals_list_events",
-    annotations={
-        "title": "List Scheduled Workouts & Calendar Events",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Scheduled Workouts & Calendar Events",
+        read_only_hint=True,
+    ),
 )
 async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
     """List scheduled workouts, calendar notes, and race targets in a date range."""
@@ -447,13 +413,10 @@ async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_get_event",
-    annotations={
-        "title": "Get Scheduled Event Details",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Scheduled Event Details",
+        read_only_hint=True,
+    ),
 )
 async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
     """Retrieve complete details and workout DSL definition of a scheduled workout event."""
@@ -484,13 +447,11 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_create_event",
-    annotations={
-        "title": "Schedule Planned Workout / Event",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Schedule Planned Workout / Event",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
 )
 async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
     """Schedule a new structured workout or calendar event using workout DSL syntax."""
@@ -519,13 +480,11 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_update_event",
-    annotations={
-        "title": "Update Scheduled Workout / Event",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Update Scheduled Workout / Event",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
 )
 async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
     """Update date, description, title, or structured workout steps on a scheduled event."""
@@ -553,13 +512,11 @@ async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_delete_event",
-    annotations={
-        "title": "Delete Scheduled Event",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Scheduled Event",
+        read_only_hint=False,
+        destructive_hint=True,
+    ),
 )
 async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
     """Delete a scheduled workout or calendar event."""
@@ -578,13 +535,10 @@ async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_list_folders",
-    annotations={
-        "title": "List Workout Library Folders",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Workout Library Folders",
+        read_only_hint=True,
+    ),
 )
 async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
     """List custom folders organizing workout templates in the athlete library."""
@@ -598,13 +552,10 @@ async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
 
 @mcp.tool(
     name="intervals_list_workouts",
-    annotations={
-        "title": "List Workout Templates in Library",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Workout Templates in Library",
+        read_only_hint=True,
+    ),
 )
 async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> str:
     """List reusable workout templates from the Intervals.icu library."""
@@ -619,13 +570,16 @@ async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> st
 
 
 def main() -> None:
-    """Run Coach MCP Server in stdio or streamable_http transport mode."""
-    if settings.mcp_transport in ("streamable_http", "sse"):
+    """Run Coach MCP Server in stdio or streamable-http transport mode."""
+    transport = cast(
+        Literal["stdio", "streamable-http", "sse"],
+        settings.mcp_transport.replace("_", "-"),
+    )
+    if transport in ("streamable-http", "sse"):
         logger.info(
-            f"Starting Coach MCP Server on {settings.mcp_host}:{settings.mcp_port} "
-            f"({settings.mcp_transport})..."
+            f"Starting Coach MCP Server on {settings.mcp_host}:{settings.mcp_port} ({transport})..."
         )
-        mcp.run(transport=settings.mcp_transport, host=settings.mcp_host, port=settings.mcp_port)
+        mcp.run(transport=transport, host=settings.mcp_host, port=settings.mcp_port)
     else:
         logger.info("Starting Coach MCP Server on stdio...")
         mcp.run(transport="stdio")
