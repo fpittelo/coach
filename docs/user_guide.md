@@ -254,6 +254,8 @@ services:
       - HTTP_TIMEOUT_SECONDS=${HTTP_TIMEOUT_SECONDS:-30.0}
       - HTTP_MAX_RETRIES=${HTTP_MAX_RETRIES:-3}
     read_only: true
+    tmpfs:
+      - /tmp
     user: "10001:10001"
     security_opt:
       - no-new-privileges:true
@@ -426,7 +428,7 @@ Coach exposes **19 tools** grouped into six categories. All read tools support `
 | :--- | :--- | :--- | :--- |
 | `intervals_list_events` | Scheduled workouts, notes, race targets in a date range. | `{"oldest": "2026-08-01", "newest": "2026-08-22", "category": "WORKOUT"}` | Events table. |
 | `intervals_get_event` | Full event details including structured workout DSL. | `{"event_id": "evt_12345"}` | Event header + DSL block. |
-| `intervals_create_event` | Schedule a new workout or calendar event. | `{"start_date_local": "2026-08-23T08:00:00", "name": "VO2max 4x4", "type": "Ride", "category": "WORKOUT", "workout_doc": "- 10m warmup\n4x\n- 4m 115%\n- 3m 50%\n- 10m cooldown"}` | Success with event ID. |
+| `intervals_create_event` | Schedule a new workout or calendar event. | `{"start_date_local": "2026-08-23T08:00:00", "name": "VO2max 4x4", "type": "Ride", "category": "WORKOUT", "workout_doc": "Warmup\n- 10m 50-65% 90rpm\n\nMain Set\n4x\n- 4m 115% 100rpm\n- 3m 50% 85rpm\n\nCooldown\n- 10m 50% 85rpm"}` | Success with event ID. |
 | `intervals_update_event` | Update date, title, description, or DSL steps. | `{"event_id": "evt_12345", "name": "Updated Workout"}` | Success confirmation. |
 | `intervals_delete_event` | Delete a scheduled event. ⚠️ Destructive. | `{"event_id": "evt_12345"}` | Success confirmation. |
 
@@ -498,8 +500,8 @@ Wind-down
   "category": "WORKOUT",
   "description": "5 x 3 min threshold intervals with explicit wattage targets.",
   "workout_doc": "Warm-up\n- 10m 150W 90rpm\n\nWork Intervals\n5x\n- 3m 250W 100rpm\n- 2m 150W 85rpm\n\nRest\n- 5m 120W 80rpm\n\nWind-down\n- 10m ramp 150W-100W 85rpm",
-  "moving_time_seconds": 3300,
-  "icu_training_load": 95
+  "moving_time_seconds": 3000,
+  "icu_training_load": 75
 }
 ```
 
