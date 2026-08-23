@@ -1,0 +1,25 @@
+name: Cleanup / Destroy Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to cleanup"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+
+jobs:
+  cleanup:
+    name: Cleanup Images and Containers
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cleanup Environment Confirmation
+        run: |
+          echo "Executing resource teardown for environment: ${{ github.event.inputs.environment }}"
+          echo "Completed cleanup check."
