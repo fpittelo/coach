@@ -36,9 +36,11 @@ class Settings(BaseSettings):
     )
 
     # Transport and Server Settings
-    mcp_transport: Literal["stdio", "streamable_http", "sse"] = Field(
+    mcp_transport: Literal["stdio", "streamable-http", "streamable_http", "sse"] = Field(
         default="stdio",
-        description="MCP server transport mode: 'stdio' or 'streamable_http'/'sse'.",
+        description=(
+            "MCP server transport mode: 'stdio', 'streamable-http', 'streamable_http' or 'sse'."
+        ),
         validation_alias="MCP_TRANSPORT",
     )
     mcp_host: str = Field(
