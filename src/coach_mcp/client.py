@@ -76,6 +76,15 @@ class IntervalsClient:
             await self._client.aclose()
             self._client = None
 
+    async def __aenter__(self) -> "IntervalsClient":
+        """Async context manager entry."""
+        await self.get_client()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Async context manager exit."""
+        await self.close()
+
     async def _request(
         self,
         method: str,
