@@ -2,9 +2,10 @@
 
 import pytest
 import respx
+
 from coach_mcp.client import (
-    IntervalsClient,
     IntervalsAuthError,
+    IntervalsClient,
     IntervalsNotFoundError,
 )
 
@@ -50,7 +51,9 @@ async def test_get_activity_not_found(client: IntervalsClient):
 async def test_list_activities_success(client: IntervalsClient):
     """Test listing activities with query parameters."""
     with respx.mock(base_url="https://intervals.icu/api/v1") as respx_mock:
-        respx_mock.get("/athlete/0/activities?oldest=2026-08-01&newest=2026-08-22&limit=10").respond(
+        respx_mock.get(
+            "/athlete/0/activities?oldest=2026-08-01&newest=2026-08-22&limit=10"
+        ).respond(
             200,
             json=[
                 {
@@ -64,7 +67,9 @@ async def test_list_activities_success(client: IntervalsClient):
             ],
         )
 
-        activities = await client.list_activities(oldest="2026-08-01", newest="2026-08-22", limit=10)
+        activities = await client.list_activities(
+            oldest="2026-08-01", newest="2026-08-22", limit=10
+        )
         assert len(activities) == 1
         assert activities[0]["id"] == "act1"
         assert activities[0]["name"] == "Endurance Ride"
@@ -80,7 +85,11 @@ async def test_create_event_success(client: IntervalsClient):
             json={"id": 98765, "name": "Threshold 3x10", "category": "WORKOUT"},
         )
 
-        payload = {"name": "Threshold 3x10", "start_date_local": "2026-08-24T08:00:00", "category": "WORKOUT"}
+        payload = {
+            "name": "Threshold 3x10",
+            "start_date_local": "2026-08-24T08:00:00",
+            "category": "WORKOUT",
+        }
         res = await client.create_event(payload)
         assert res["id"] == 98765
         assert res["name"] == "Threshold 3x10"

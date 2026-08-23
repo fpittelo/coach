@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic import ValidationError
+
 from coach_mcp.models import (
     CreateActivityInput,
     CreateEventInput,
