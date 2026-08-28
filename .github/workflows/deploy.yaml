@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - dev
+    tags:
+      - 'v*'
   pull_request:
     types: [closed]
     branches:
@@ -43,6 +45,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             ENV_TAG="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref_type }}" == "tag" ]; then
+            ENV_TAG="${{ github.ref_name }}"
           elif [ "${{ github.ref_name }}" == "dev" ]; then
             ENV_TAG="dev"
           elif [ "${{ github.base_ref }}" == "qa" ]; then
@@ -62,7 +66,8 @@ jobs:
           tags: |
             type=raw,value=${{ steps.env.outputs.tag }}
             type=sha,prefix=
-            type=raw,value=latest,enable=${{ steps.env.outputs.tag == 'prod' }}
+            type=raw,value=latest,enable=${{ steps.env.outputs.tag == 'prod' || startsWith(steps.env.outputs.tag, 'v') }}
+            type=raw,value=prod,enable=${{ startsWith(steps.env.outputs.tag, 'v') }}
 
       - name: Log in to GitHub Container Registry (GHCR)
         uses: docker/login-action@v3
