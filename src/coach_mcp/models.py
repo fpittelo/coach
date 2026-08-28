@@ -33,6 +33,7 @@ class GetAthleteProfileInput(BaseToolModel):
     athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -46,6 +47,7 @@ class GetSportSettingsInput(BaseToolModel):
     athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -74,6 +76,7 @@ class ListActivitiesInput(BaseToolModel):
     athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
     )
     limit: int | None = Field(
         default=50,
@@ -94,6 +97,7 @@ class GetActivityInput(BaseToolModel):
         ...,
         description="Unique activity ID (e.g. 'i12345678' or numeric ID '12345678').",
         min_length=1,
+        pattern=r"^[a-zA-Z0-9_-]+$",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -108,6 +112,7 @@ class GetActivityStreamsInput(BaseToolModel):
         ...,
         description="Unique activity ID.",
         min_length=1,
+        pattern=r"^[a-zA-Z0-9_-]+$",
     )
     types: list[str] | None = Field(
         default_factory=lambda: ["watts", "heartrate", "cadence", "time", "distance", "altitude"],
@@ -129,6 +134,33 @@ class GetActivityIntervalsInput(BaseToolModel):
         ...,
         description="Unique activity ID.",
         min_length=1,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+
+class GetPowerCurveInput(BaseToolModel):
+    """Input parameters for retrieving athlete or activity power curves."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
+    activity_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional activity ID. If provided, fetches power curve "
+            "for this specific activity instead of athlete power curves."
+        ),
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    sport_type: str = Field(
+        default="Ride",
+        description="Sport type for athlete power curve (e.g., 'Ride', 'Run').",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -152,6 +184,7 @@ class CreateActivityInput(BaseToolModel):
             "Local start timestamp in ISO format 'YYYY-MM-DDTHH:MM:SS' "
             "(e.g. '2026-08-22T09:00:00')."
         ),
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
     )
     moving_time_seconds: int = Field(..., description="Moving duration in seconds.", ge=1)
     elapsed_time_seconds: int | None = Field(
@@ -168,13 +201,17 @@ class CreateActivityInput(BaseToolModel):
         default=None, description="Training Load / TSS score.", ge=0.0
     )
     description: str | None = Field(default=None, description="Detailed activity notes.")
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
 
 
 class UpdateActivityInput(BaseToolModel):
     """Input parameters for modifying an existing activity."""
 
-    activity_id: str = Field(..., description="Activity ID to update.")
+    activity_id: str = Field(..., description="Activity ID to update.", pattern=r"^[a-zA-Z0-9_-]+$")
     name: str | None = Field(default=None, description="Updated activity title.")
     description: str | None = Field(default=None, description="Updated notes or athlete feedback.")
     perceived_exertion: float | None = Field(
@@ -197,7 +234,7 @@ class UpdateActivityInput(BaseToolModel):
 class DeleteActivityInput(BaseToolModel):
     """Input parameters for deleting an activity."""
 
-    activity_id: str = Field(..., description="Activity ID to delete.")
+    activity_id: str = Field(..., description="Activity ID to delete.", pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +255,11 @@ class GetWellnessInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
@@ -258,7 +299,11 @@ class RecordWellnessInput(BaseToolModel):
         default=None, description="Injury status (1=None, 4=Injured).", ge=1, le=4
     )
     comments: str | None = Field(default=None, description="Notes on sleep, recovery, or health.")
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
 
 
 class GetFitnessSummaryInput(BaseToolModel):
@@ -274,7 +319,11 @@ class GetFitnessSummaryInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
@@ -298,7 +347,11 @@ class ListEventsInput(BaseToolModel):
         description="End date in ISO format YYYY-MM-DD.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     category: str | None = Field(
         default=None,
         description="Event category filter (e.g. 'WORKOUT', 'NOTE', 'TARGET', 'RACE_A', 'RACE_B').",
@@ -311,8 +364,17 @@ class ListEventsInput(BaseToolModel):
 class GetEventInput(BaseToolModel):
     """Input parameters for retrieving a specific calendar event or workout."""
 
-    event_id: str = Field(..., description="Unique event or planned workout ID.", min_length=1)
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    event_id: str = Field(
+        ...,
+        description="Unique event or planned workout ID.",
+        min_length=1,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
         description="Output format: 'markdown' or 'json'.",
@@ -325,6 +387,7 @@ class CreateEventInput(BaseToolModel):
     start_date_local: str = Field(
         ...,
         description="Local start timestamp 'YYYY-MM-DDTHH:MM:SS' (e.g. '2026-08-23T08:00:00').",
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
     )
     name: str = Field(
         ..., description="Workout or event title (e.g. 'Over-Unders 3x10min').", min_length=1
@@ -354,14 +417,26 @@ class CreateEventInput(BaseToolModel):
         default=None, description="Planned duration in seconds.", ge=1
     )
     icu_training_load: float | None = Field(default=None, description="Planned TSS / load.", ge=0.0)
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
 
 
 class UpdateEventInput(BaseToolModel):
     """Input parameters for modifying a planned workout or calendar event."""
 
-    event_id: str = Field(..., description="ID of the event to update.")
-    start_date_local: str | None = Field(default=None, description="Updated start date/time.")
+    event_id: str = Field(
+        ...,
+        description="ID of the event to update.",
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    start_date_local: str | None = Field(
+        default=None,
+        description="Updated start date/time.",
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
+    )
     name: str | None = Field(default=None, description="Updated title.")
     description: str | None = Field(default=None, description="Updated instructions.")
     workout_doc: str | None = Field(default=None, description="Updated structured workout DSL.")
@@ -371,14 +446,26 @@ class UpdateEventInput(BaseToolModel):
     icu_training_load: float | None = Field(
         default=None, description="Updated planned load.", ge=0.0
     )
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
 
 
 class DeleteEventInput(BaseToolModel):
     """Input parameters for deleting a planned event or workout."""
 
-    event_id: str = Field(..., description="ID of the event to delete.")
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    event_id: str = Field(
+        ...,
+        description="ID of the event to delete.",
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +476,11 @@ class DeleteEventInput(BaseToolModel):
 class ListFoldersInput(BaseToolModel):
     """Input parameters for listing workout folders in library."""
 
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
@@ -398,8 +489,16 @@ class ListFoldersInput(BaseToolModel):
 class ListWorkoutsInput(BaseToolModel):
     """Input parameters for listing workout templates."""
 
-    folder_id: str | None = Field(default=None, description="Filter by folder ID.")
-    athlete_id: str | None = Field(default=None, description="Athlete ID ('0' or None for self).")
+    folder_id: str | None = Field(
+        default=None,
+        description="Filter by folder ID.",
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+        pattern=r"^(0|i\d+)$",
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )

@@ -14,6 +14,7 @@ from coach_mcp.models import (
     GetAthleteProfileInput,
     GetEventInput,
     GetFitnessSummaryInput,
+    GetPowerCurveInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -201,6 +202,43 @@ def test_get_activity_intervals_input_extra_forbid():
     """Test GetActivityIntervalsInput rejects extra fields."""
     with pytest.raises(ValidationError):
         GetActivityIntervalsInput(activity_id="i123", extra=True)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Power Curve Models
+# ---------------------------------------------------------------------------
+
+
+def test_get_power_curve_input_defaults():
+    """Test GetPowerCurveInput defaults."""
+    model = GetPowerCurveInput()
+    assert model.athlete_id is None
+    assert model.activity_id is None
+    assert model.sport_type == "Ride"
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_get_power_curve_input_activity_override():
+    """Test GetPowerCurveInput with explicit activity_id."""
+    model = GetPowerCurveInput(activity_id="i123", response_format=ResponseFormat.JSON)
+    assert model.activity_id == "i123"
+    assert model.athlete_id is None
+    assert model.sport_type == "Ride"
+    assert model.response_format == ResponseFormat.JSON
+
+
+def test_get_power_curve_input_athlete_and_sport():
+    """Test GetPowerCurveInput with athlete_id and sport_type."""
+    model = GetPowerCurveInput(athlete_id="i456", sport_type="Run")
+    assert model.athlete_id == "i456"
+    assert model.sport_type == "Run"
+    assert model.activity_id is None
+
+
+def test_get_power_curve_input_extra_forbid():
+    """Test GetPowerCurveInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        GetPowerCurveInput(extra=True)  # type: ignore
 
 
 def test_create_activity_input_valid():
@@ -784,3 +822,12 @@ def test_list_workouts_input_extra_forbid():
     """Test ListWorkoutsInput rejects extra fields."""
     with pytest.raises(ValidationError):
         ListWorkoutsInput(extra=True)  # type: ignore
+
+
+def test_list_workouts_input_folder_id_validation():
+    """Test ListWorkoutsInput validates folder_id regex."""
+    valid = ListWorkoutsInput(folder_id="folder-123_abc")
+    assert valid.folder_id == "folder-123_abc"
+
+    with pytest.raises(ValidationError):
+        ListWorkoutsInput(folder_id="../../etc/passwd")
