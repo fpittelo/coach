@@ -136,6 +136,30 @@ class GetActivityIntervalsInput(BaseToolModel):
     )
 
 
+class GetPowerCurveInput(BaseToolModel):
+    """Input parameters for retrieving athlete or activity power curves."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self).",
+    )
+    activity_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional activity ID. If provided, fetches power curve "
+            "for this specific activity instead of athlete power curves."
+        ),
+    )
+    sport_type: str = Field(
+        default="Ride",
+        description="Sport type for athlete power curve (e.g., 'Ride', 'Run').",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+
 class CreateActivityInput(BaseToolModel):
     """Input parameters for manually recording an activity."""
 

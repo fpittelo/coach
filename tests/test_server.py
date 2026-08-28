@@ -14,6 +14,7 @@ from coach_mcp.formatters import (
     format_events_list,
     format_fitness_summary,
     format_folders,
+    format_power_curve,
     format_profile,
     format_sport_settings,
     format_wellness_list,
@@ -31,6 +32,7 @@ from coach_mcp.models import (
     GetAthleteProfileInput,
     GetEventInput,
     GetFitnessSummaryInput,
+    GetPowerCurveInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -54,6 +56,7 @@ from coach_mcp.server import (
     intervals_get_athlete_profile,
     intervals_get_event,
     intervals_get_fitness_summary,
+    intervals_get_power_curve,
     intervals_get_sport_settings,
     intervals_get_wellness,
     intervals_list_activities,
@@ -110,6 +113,7 @@ def test_tools_registered():
         "intervals_get_activity",
         "intervals_get_activity_streams",
         "intervals_get_activity_intervals",
+        "intervals_get_power_curve",
         "intervals_create_activity",
         "intervals_update_activity",
         "intervals_delete_activity",
@@ -389,6 +393,85 @@ async def test_intervals_get_activity_intervals(mock_ctx, mock_client):
     assert '"intervals"' in result
     assert "Interval 1" in result
     mock_client.get_activity_intervals.assert_awaited_once_with("i123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_curve_athlete_markdown(mock_ctx, mock_client):
+    """Test get power curve tool returns markdown for athlete curves."""
+    mock_client.get_power_curve = AsyncMock(
+        return_value={"Ride": {"5": 850, "60": 300, "300": 280}}
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerCurveInput(
+        athlete_id="i456", sport_type="Ride", response_format=ResponseFormat.MARKDOWN
+    )
+    result = await intervals_get_power_curve(params, mock_ctx)
+
+    assert "Power Curve" in result
+    assert "850" in result
+    assert "300" in result
+    mock_client.get_power_curve.assert_awaited_once_with("i456", "Ride")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_curve_athlete_json(mock_ctx, mock_client):
+    """Test get power curve tool returns JSON for athlete curves."""
+    mock_client.get_power_curve = AsyncMock(return_value={"Ride": {"60": 300}})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerCurveInput(response_format=ResponseFormat.JSON)
+    result = await intervals_get_power_curve(params, mock_ctx)
+
+    assert '"Ride"' in result
+    assert '"60": 300' in result
+    mock_client.get_power_curve.assert_awaited_once_with(None, "Ride")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_curve_activity_markdown(mock_ctx, mock_client):
+    """Test get power curve tool returns markdown for activity curve."""
+    mock_client.get_activity_power_curve = AsyncMock(
+        return_value={"5": 900, "60": 320, "300": 290}
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerCurveInput(activity_id="i123", response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_power_curve(params, mock_ctx)
+
+    assert "Power Curve" in result
+    assert "900" in result
+    assert "320" in result
+    mock_client.get_activity_power_curve.assert_awaited_once_with("i123")
+    mock_client.get_power_curve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_curve_activity_json(mock_ctx, mock_client):
+    """Test get power curve tool returns JSON for activity curve."""
+    mock_client.get_activity_power_curve = AsyncMock(return_value={"60": 320})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerCurveInput(activity_id="i123", response_format=ResponseFormat.JSON)
+    result = await intervals_get_power_curve(params, mock_ctx)
+
+    assert '"60": 320' in result
+    mock_client.get_activity_power_curve.assert_awaited_once_with("i123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_curve_error(mock_ctx, mock_client):
+    """Test get power curve tool handles API errors gracefully."""
+    mock_client.get_power_curve = AsyncMock(
+        side_effect=IntervalsNotFoundError("Not found", status_code=404)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerCurveInput(athlete_id="missing")
+    result = await intervals_get_power_curve(params, mock_ctx)
+
+    assert "Error fetching power curve" in result
+    assert "Not found" in result
 
 
 @pytest.mark.asyncio
@@ -1011,3 +1094,36 @@ def test_format_workouts_json():
     workouts = [{"id": "w1"}]
     result = format_workouts(workouts, fmt_json=True)
     assert '"id": "w1"' in result
+
+
+def test_format_power_curve_markdown():
+    """Test power curve markdown formatter."""
+    data = {"Ride": {"5": 850, "60": 300, "300": 280}}
+    result = format_power_curve(data, response_format=ResponseFormat.MARKDOWN)
+    assert "Power Curve" in result
+    assert "850" in result
+    assert "300" in result
+
+
+def test_format_power_curve_json():
+    """Test power curve JSON formatter."""
+    data = {"Ride": {"60": 300}}
+    result = format_power_curve(data, response_format=ResponseFormat.JSON)
+    assert '"Ride"' in result
+    assert '"60": 300' in result
+
+
+def test_format_power_curve_activity_markdown():
+    """Test power curve markdown formatter for activity curve data."""
+    data = {"5": 900, "60": 320, "300": 290}
+    result = format_power_curve(data, response_format=ResponseFormat.MARKDOWN)
+    assert "Power Curve" in result
+    assert "900" in result
+    assert "320" in result
+
+
+def test_format_power_curve_empty():
+    """Test power curve formatter with empty data."""
+    result = format_power_curve({}, response_format=ResponseFormat.MARKDOWN)
+    assert "Power Curve" in result
+    assert "No power curve data" in result

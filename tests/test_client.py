@@ -160,6 +160,86 @@ async def test_get_activity_intervals_success(client: IntervalsClient):
 
 
 @pytest.mark.asyncio
+async def test_get_power_curve_success(client: IntervalsClient):
+    """Test successful athlete power curve retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/power-curves?curves=Ride").respond(
+            200,
+            json={
+                "Ride": {
+                    "5": 850,
+                    "60": 300,
+                    "300": 280,
+                    "1200": 250,
+                }
+            },
+        )
+
+        data = await client.get_power_curve()
+        assert data["Ride"]["5"] == 850
+        assert data["Ride"]["60"] == 300
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_with_sport_type(client: IntervalsClient):
+    """Test athlete power curve retrieval with explicit sport type."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/power-curves?curves=Run").respond(
+            200,
+            json={"Run": {"60": 320}},
+        )
+
+        data = await client.get_power_curve(sport_type="Run")
+        assert data["Run"]["60"] == 320
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
+    """Test athlete power curve retrieval with explicit athlete_id."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/i123/power-curves?curves=Ride").respond(
+            200,
+            json={"Ride": {"60": 310}},
+        )
+
+        data = await client.get_power_curve(athlete_id="i123")
+        assert data["Ride"]["60"] == 310
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_power_curve_success(client: IntervalsClient):
+    """Test successful activity power curve retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/activity/i123/power-curve").respond(
+            200,
+            json={
+                "5": 900,
+                "60": 320,
+                "300": 290,
+            },
+        )
+
+        data = await client.get_activity_power_curve("i123")
+        assert data["5"] == 900
+        assert data["60"] == 320
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_power_curve_not_found(client: IntervalsClient):
+    """Test activity power curve 404 error handling."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/activity/missing/power-curve").respond(404, text="Activity not found")
+
+        with pytest.raises(IntervalsNotFoundError):
+            await client.get_activity_power_curve("missing")
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_create_activity_success(client: IntervalsClient):
     """Test successful activity creation."""
     with respx.mock(base_url=BASE_URL) as respx_mock:

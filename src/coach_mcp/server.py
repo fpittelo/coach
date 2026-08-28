@@ -18,6 +18,7 @@ from coach_mcp.formatters import (
     format_events_list,
     format_fitness_summary,
     format_folders,
+    format_power_curve,
     format_profile,
     format_sport_settings,
     format_wellness_list,
@@ -35,6 +36,7 @@ from coach_mcp.models import (
     GetAthleteProfileInput,
     GetEventInput,
     GetFitnessSummaryInput,
+    GetPowerCurveInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -214,6 +216,26 @@ async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ct
         return to_json_str(intervals_data)
     except IntervalsAPIError as exc:
         return f"Error fetching intervals for activity '{params.activity_id}': {exc}"
+
+
+@mcp.tool(
+    name="intervals_get_power_curve",
+    annotations=ToolAnnotations(
+        title="Get Power Curve",
+        read_only_hint=True,
+    ),
+)
+async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) -> str:
+    """Retrieve mean-maximal power (MMP) curve for an athlete or a specific activity."""
+    client = _get_client_from_ctx(ctx)
+    try:
+        if params.activity_id:
+            data = await client.get_activity_power_curve(params.activity_id)
+        else:
+            data = await client.get_power_curve(params.athlete_id, params.sport_type)
+        return format_power_curve(data, response_format=params.response_format)
+    except IntervalsAPIError as exc:
+        return f"Error fetching power curve: {exc}"
 
 
 @mcp.tool(

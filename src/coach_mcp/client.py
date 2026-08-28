@@ -228,6 +228,23 @@ class IntervalsClient:
         """Retrieve detected intervals for an activity."""
         return await self._request("GET", f"activity/{activity_id}/intervals")
 
+    async def get_power_curve(
+        self,
+        athlete_id: str | None = None,
+        sport_type: str = "Ride",
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Retrieve athlete mean-maximal power (MMP) curve for a sport type."""
+        target_id = self._resolve_athlete(athlete_id)
+        params = {"curves": sport_type}
+        return await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
+
+    async def get_activity_power_curve(
+        self,
+        activity_id: str,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Retrieve mean-maximal power (MMP) curve for a specific activity."""
+        return await self._request("GET", f"activity/{activity_id}/power-curve")
+
     async def create_activity(
         self,
         payload: dict[str, Any],
