@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from coach_mcp.models import ResponseFormat
+
 
 def to_json_str(data: Any) -> str:
     """Format Python object as indented JSON string."""
@@ -336,5 +338,122 @@ def format_workouts(workouts: list[dict[str, Any]], fmt_json: bool = False) -> s
         if desc:
             lines.append(f"- **Description**: {desc}")
         lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_duration(seconds: int | float | str) -> str:
+    """Convert seconds into a human-readable duration label."""
+    try:
+        secs = int(seconds)
+    except (ValueError, TypeError):
+        return str(seconds)
+
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    hours = secs // 3600
+    minutes = (secs % 3600) // 60
+    if minutes == 0:
+        return f"{hours}h"
+    return f"{hours}h {minutes}m"
+
+
+def _extract_power_curve_points(data: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    """Extract normalized (duration, watts, wkg) points from various power curve shapes."""
+    if isinstance(data, list):
+        return [
+            {
+                "duration": item.get("duration", item.get("secs", "-")),
+                "watts": item.get("watts", item.get("power", "-")),
+                "wkg": item.get("wkg", "-"),
+            }
+            for item in data
+            if isinstance(item, dict)
+        ]
+
+    points: list[dict[str, Any]] = []
+
+    # Flat activity power curve: {seconds: watts}
+    if data and all(not isinstance(v, dict) for v in data.values()):
+        for duration, watts in data.items():
+            points.append(
+                {
+                    "duration": duration,
+                    "watts": watts,
+                    "wkg": "-",
+                }
+            )
+        return points
+
+    # Intervals.icu athlete power-curves returns {sport_type: {seconds: watts}}
+    for sport_type, curve in data.items():
+        if not isinstance(curve, dict):
+            continue
+        for duration, watts in curve.items():
+            if isinstance(watts, dict):
+                points.append(
+                    {
+                        "sport": sport_type,
+                        "duration": duration,
+                        "watts": watts.get("watts", watts.get("power", "-")),
+                        "wkg": watts.get("wkg", "-"),
+                    }
+                )
+            else:
+                points.append(
+                    {
+                        "sport": sport_type,
+                        "duration": duration,
+                        "watts": watts,
+                        "wkg": "-",
+                    }
+                )
+    return points
+
+
+def format_power_curve(
+    data: dict[str, Any] | list[Any],
+    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+) -> str:
+    """Format power-duration / MMP curve data as markdown table or JSON."""
+    if response_format == ResponseFormat.JSON:
+        return to_json_str(data)
+
+    if not data:
+        return "# Power Curve\n\nNo power curve data available."
+
+    points = _extract_power_curve_points(data)
+
+    # If data is a flat activity power curve dict, points will have no sport key
+    is_activity_curve = isinstance(data, dict) and not any("sport" in p for p in points)
+
+    title = "# Activity Power Curve" if is_activity_curve else "# Power Curve"
+    lines = [title, ""]
+
+    # Include eFTP / critical power if present at top level
+    eftp = data.get("eftp") if isinstance(data, dict) else None
+    cp = data.get("cp") if isinstance(data, dict) else None
+    if eftp is not None:
+        lines.append(f"- **eFTP**: {eftp} W")
+    if cp is not None:
+        lines.append(f"- **Critical Power (CP)**: {cp} W")
+    if eftp is not None or cp is not None:
+        lines.append("")
+
+    if not points:
+        lines.append("No power-duration points found in response.")
+        return "\n".join(lines)
+
+    lines.append("| Duration | Watts | W/kg | Sport |")
+    lines.append("| :--- | :--- | :--- | :--- |")
+
+    for point in points:
+        duration = _format_duration(point["duration"])
+        watts = point.get("watts", "-")
+        wkg = point.get("wkg", "-")
+        sport = point.get("sport", "-")
+        lines.append(f"| {duration} | {watts} | {wkg} | {sport} |")
 
     return "\n".join(lines)

@@ -1,5 +1,6 @@
 """Comprehensive tests for IntervalsClient using respx mock server."""
 
+import asyncio
 import json
 
 import httpx
@@ -156,6 +157,86 @@ async def test_get_activity_intervals_success(client: IntervalsClient):
         data = await client.get_activity_intervals("i123")
         assert len(data["intervals"]) == 2
         assert data["intervals"][0]["avg_watts"] == 250
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_success(client: IntervalsClient):
+    """Test successful athlete power curve retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/power-curves?curves=Ride").respond(
+            200,
+            json={
+                "Ride": {
+                    "5": 850,
+                    "60": 300,
+                    "300": 280,
+                    "1200": 250,
+                }
+            },
+        )
+
+        data = await client.get_power_curve()
+        assert data["Ride"]["5"] == 850
+        assert data["Ride"]["60"] == 300
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_with_sport_type(client: IntervalsClient):
+    """Test athlete power curve retrieval with explicit sport type."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/power-curves?curves=Run").respond(
+            200,
+            json={"Run": {"60": 320}},
+        )
+
+        data = await client.get_power_curve(sport_type="Run")
+        assert data["Run"]["60"] == 320
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
+    """Test athlete power curve retrieval with explicit athlete_id."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/i123/power-curves?curves=Ride").respond(
+            200,
+            json={"Ride": {"60": 310}},
+        )
+
+        data = await client.get_power_curve(athlete_id="i123")
+        assert data["Ride"]["60"] == 310
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_power_curve_success(client: IntervalsClient):
+    """Test successful activity power curve retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/activity/i123/power-curve").respond(
+            200,
+            json={
+                "5": 900,
+                "60": 320,
+                "300": 290,
+            },
+        )
+
+        data = await client.get_activity_power_curve("i123")
+        assert data["5"] == 900
+        assert data["60"] == 320
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_power_curve_not_found(client: IntervalsClient):
+    """Test activity power curve 404 error handling."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/activity/missing/power-curve").respond(404, text="Activity not found")
+
+        with pytest.raises(IntervalsNotFoundError):
+            await client.get_activity_power_curve("missing")
         await client.close()
 
 
@@ -553,3 +634,174 @@ async def test_resolve_athlete_fallback(client: IntervalsClient):
         data = await client.get_athlete_profile(athlete_id="")
         assert data["athlete"]["id"] == "0"
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# TTL Cache Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_prevents_duplicate_http_call():
+    """A second call with the same key should not trigger another HTTP request."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0").respond(
+            200,
+            json={"athlete": {"id": "0", "name": "Cached Athlete"}},
+        )
+
+        first = await client.get_athlete_profile()
+        second = await client.get_athlete_profile()
+
+        assert first["athlete"]["name"] == "Cached Athlete"
+        assert second["athlete"]["name"] == "Cached Athlete"
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cache_expiration_triggers_fresh_request():
+    """After TTL expires, a fresh HTTP request should be made."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=0,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0")
+        route.side_effect = [
+            httpx.Response(200, json={"athlete": {"id": "0", "name": "First"}}),
+            httpx.Response(200, json={"athlete": {"id": "0", "name": "Second"}}),
+        ]
+
+        first = await client.get_athlete_profile()
+        await asyncio.sleep(0.01)
+        second = await client.get_athlete_profile()
+
+        assert first["athlete"]["name"] == "First"
+        assert second["athlete"]["name"] == "Second"
+        assert route.call_count == 2
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cache_cleared_on_client_close():
+    """Closing the client should clear the cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0")
+        route.side_effect = [
+            httpx.Response(200, json={"athlete": {"id": "0", "name": "First"}}),
+            httpx.Response(200, json={"athlete": {"id": "0", "name": "Second"}}),
+        ]
+
+        first = await client.get_athlete_profile()
+        await client.close()
+        second = await client.get_athlete_profile()
+
+        assert first["athlete"]["name"] == "First"
+        assert second["athlete"]["name"] == "Second"
+        assert route.call_count == 2
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_sport_settings_are_cached():
+    """Sport settings should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/sport-settings").respond(
+            200,
+            json=[{"types": ["Ride"], "ftp": 300}],
+        )
+
+        first = await client.get_sport_settings()
+        second = await client.get_sport_settings()
+
+        assert first[0]["ftp"] == 300
+        assert second[0]["ftp"] == 300
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_folders_are_cached():
+    """Folders should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/folders").respond(
+            200,
+            json=[{"id": "folder1", "name": "Base Training"}],
+        )
+
+        first = await client.list_folders()
+        second = await client.list_folders()
+
+        assert first[0]["name"] == "Base Training"
+        assert second[0]["name"] == "Base Training"
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_endpoints_are_not_cached():
+    """Dynamic endpoints like activities should always hit the API."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get(
+            "/athlete/0/activities?oldest=2026-08-01&newest=2026-08-22&limit=10"
+        ).respond(
+            200,
+            json=[{"id": "act1", "name": "Endurance Ride"}],
+        )
+
+        first = await client.list_activities(
+            oldest="2026-08-01", newest="2026-08-22", limit=10
+        )
+        second = await client.list_activities(
+            oldest="2026-08-01", newest="2026-08-22", limit=10
+        )
+
+        assert first[0]["name"] == "Endurance Ride"
+        assert second[0]["name"] == "Endurance Ride"
+        assert route.call_count == 2
+
+    await client.close()
