@@ -48,6 +48,7 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
 )
+from coach_mcp.security import redact_sensitive
 
 # Configure logging to stderr to prevent stdout JSON-RPC corruption
 logger = logging.getLogger("coach_mcp")
@@ -114,7 +115,7 @@ async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Con
         data = await client.get_athlete_profile(params.athlete_id)
         return format_profile(data, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error fetching athlete profile: {exc}"
+        return redact_sensitive(f"Error fetching athlete profile: {exc}")
 
 
 @mcp.tool(
@@ -131,7 +132,7 @@ async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Conte
         data = await client.get_sport_settings(params.athlete_id)
         return format_sport_settings(data, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error fetching sport settings: {exc}"
+        return redact_sensitive(f"Error fetching sport settings: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +161,7 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
             activities, fmt_json=(params.response_format == ResponseFormat.JSON)
         )
     except IntervalsAPIError as exc:
-        return f"Error listing activities: {exc}"
+        return redact_sensitive(f"Error listing activities: {exc}")
 
 
 @mcp.tool(
@@ -179,7 +180,7 @@ async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
             activity, fmt_json=(params.response_format == ResponseFormat.JSON)
         )
     except IntervalsAPIError as exc:
-        return f"Error fetching activity '{params.activity_id}': {exc}"
+        return redact_sensitive(f"Error fetching activity '{params.activity_id}': {exc}")
 
 
 @mcp.tool(
@@ -198,7 +199,9 @@ async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: C
             streams, fmt_json=(params.response_format == ResponseFormat.JSON)
         )
     except IntervalsAPIError as exc:
-        return f"Error fetching streams for activity '{params.activity_id}': {exc}"
+        return redact_sensitive(
+            f"Error fetching streams for activity '{params.activity_id}': {exc}"
+        )
 
 
 @mcp.tool(
@@ -215,7 +218,9 @@ async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ct
         intervals_data = await client.get_activity_intervals(params.activity_id)
         return to_json_str(intervals_data)
     except IntervalsAPIError as exc:
-        return f"Error fetching intervals for activity '{params.activity_id}': {exc}"
+        return redact_sensitive(
+            f"Error fetching intervals for activity '{params.activity_id}': {exc}"
+        )
 
 
 @mcp.tool(
@@ -235,7 +240,7 @@ async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) ->
             data = await client.get_power_curve(params.athlete_id, params.sport_type)
         return format_power_curve(data, response_format=params.response_format)
     except IntervalsAPIError as exc:
-        return f"Error fetching power curve: {exc}"
+        return redact_sensitive(f"Error fetching power curve: {exc}")
 
 
 @mcp.tool(
@@ -271,7 +276,7 @@ async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -
         res = await client.create_activity(payload, athlete_id=params.athlete_id)
         return f"Successfully created activity: {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error creating activity: {exc}"
+        return redact_sensitive(f"Error creating activity: {exc}")
 
 
 @mcp.tool(
@@ -301,7 +306,7 @@ async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -
         res = await client.update_activity(params.activity_id, payload)
         return f"Successfully updated activity '{params.activity_id}': {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error updating activity: {exc}"
+        return redact_sensitive(f"Error updating activity: {exc}")
 
 
 @mcp.tool(
@@ -319,7 +324,7 @@ async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -
         res = await client.delete_activity(params.activity_id)
         return f"Successfully deleted activity '{params.activity_id}': {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error deleting activity: {exc}"
+        return redact_sensitive(f"Error deleting activity: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +348,7 @@ async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
         )
         return format_wellness_list(data, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error fetching wellness records: {exc}"
+        return redact_sensitive(f"Error fetching wellness records: {exc}")
 
 
 @mcp.tool(
@@ -380,7 +385,7 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
         res = await client.record_wellness(params.date, payload, athlete_id=params.athlete_id)
         return f"Successfully recorded wellness for {params.date}: {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error recording wellness: {exc}"
+        return redact_sensitive(f"Error recording wellness: {exc}")
 
 
 @mcp.tool(
@@ -403,7 +408,7 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
             wellness_data, fmt_json=(params.response_format == ResponseFormat.JSON)
         )
     except IntervalsAPIError as exc:
-        return f"Error calculating fitness summary: {exc}"
+        return redact_sensitive(f"Error calculating fitness summary: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +435,7 @@ async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
         )
         return format_events_list(events, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error listing calendar events: {exc}"
+        return redact_sensitive(f"Error listing calendar events: {exc}")
 
 
 @mcp.tool(
@@ -464,7 +469,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         ]
         return "\n".join(lines)
     except IntervalsAPIError as exc:
-        return f"Error fetching event '{params.event_id}': {exc}"
+        return redact_sensitive(f"Error fetching event '{params.event_id}': {exc}")
 
 
 @mcp.tool(
@@ -497,7 +502,7 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
         res = await client.create_event(payload, athlete_id=params.athlete_id)
         return f"Successfully scheduled event '{params.name}': {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error scheduling event: {exc}"
+        return redact_sensitive(f"Error scheduling event: {exc}")
 
 
 @mcp.tool(
@@ -529,7 +534,7 @@ async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
         res = await client.update_event(params.event_id, payload, athlete_id=params.athlete_id)
         return f"Successfully updated event '{params.event_id}': {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error updating event: {exc}"
+        return redact_sensitive(f"Error updating event: {exc}")
 
 
 @mcp.tool(
@@ -547,7 +552,7 @@ async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
         res = await client.delete_event(params.event_id, athlete_id=params.athlete_id)
         return f"Successfully deleted event '{params.event_id}': {to_json_str(res)}"
     except IntervalsAPIError as exc:
-        return f"Error deleting event: {exc}"
+        return redact_sensitive(f"Error deleting event: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +574,7 @@ async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
         folders = await client.list_folders(athlete_id=params.athlete_id)
         return format_folders(folders, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error listing folders: {exc}"
+        return redact_sensitive(f"Error listing folders: {exc}")
 
 
 @mcp.tool(
@@ -588,7 +593,7 @@ async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> st
         )
         return format_workouts(workouts, fmt_json=(params.response_format == ResponseFormat.JSON))
     except IntervalsAPIError as exc:
-        return f"Error listing workouts: {exc}"
+        return redact_sensitive(f"Error listing workouts: {exc}")
 
 
 def main() -> None:
