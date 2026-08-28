@@ -822,3 +822,12 @@ def test_list_workouts_input_extra_forbid():
     """Test ListWorkoutsInput rejects extra fields."""
     with pytest.raises(ValidationError):
         ListWorkoutsInput(extra=True)  # type: ignore
+
+
+def test_list_workouts_input_folder_id_validation():
+    """Test ListWorkoutsInput validates folder_id regex."""
+    valid = ListWorkoutsInput(folder_id="folder-123_abc")
+    assert valid.folder_id == "folder-123_abc"
+
+    with pytest.raises(ValidationError):
+        ListWorkoutsInput(folder_id="../../etc/passwd")

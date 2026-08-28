@@ -31,7 +31,7 @@ class IntervalsAPIError(Exception):
 
     def __str__(self) -> str:
         """Return a sanitized string representation with secrets redacted."""
-        message = redact_sensitive(self.args[0]) if self.args else "IntervalsAPIError"
+        message = redact_sensitive(str(self.args[0])) if self.args else "IntervalsAPIError"
         parts = [message]
         if self.status_code is not None:
             parts.append(f"status_code={self.status_code}")

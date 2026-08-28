@@ -489,7 +489,11 @@ class ListFoldersInput(BaseToolModel):
 class ListWorkoutsInput(BaseToolModel):
     """Input parameters for listing workout templates."""
 
-    folder_id: str | None = Field(default=None, description="Filter by folder ID.")
+    folder_id: str | None = Field(
+        default=None,
+        description="Filter by folder ID.",
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
     athlete_id: str | None = Field(
         default=None,
         description="Athlete ID ('0' or None for self).",
