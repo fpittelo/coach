@@ -66,5 +66,12 @@ class Settings(BaseSettings):
         validation_alias="HTTP_MAX_RETRIES",
     )
 
+    # Caching
+    cache_ttl_seconds: int = Field(
+        default=300,
+        description="Default TTL in seconds for semi-static cached responses.",
+        validation_alias="CACHE_TTL_SECONDS",
+    )
+
 
 settings = Settings()

@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from coach_mcp.cache import TTLCache
 from coach_mcp.config import settings
 
 logger = logging.getLogger("coach_mcp.client")
@@ -50,13 +51,16 @@ class IntervalsClient:
         base_url: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        cache_ttl: int | None = None,
     ) -> None:
         self.api_key = api_key or settings.intervals_api_key
         self.default_athlete_id = athlete_id or settings.intervals_athlete_id
         self.base_url = (base_url or settings.intervals_base_url).rstrip("/")
         self.timeout = timeout or settings.http_timeout_seconds
         self.max_retries = max_retries or settings.http_max_retries
+        self.cache_ttl = cache_ttl if cache_ttl is not None else settings.cache_ttl_seconds
         self._client: httpx.AsyncClient | None = None
+        self._cache = TTLCache(default_ttl=self.cache_ttl)
 
     async def get_client(self) -> httpx.AsyncClient:
         """Retrieve or create an active httpx.AsyncClient."""
@@ -71,10 +75,11 @@ class IntervalsClient:
         return self._client
 
     async def close(self) -> None:
-        """Close the underlying HTTP client session."""
+        """Close the underlying HTTP client session and clear the cache."""
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+        await self._cache.clear()
 
     async def __aenter__(self) -> "IntervalsClient":
         """Async context manager entry."""
@@ -186,12 +191,24 @@ class IntervalsClient:
     async def get_athlete_profile(self, athlete_id: str | None = None) -> dict[str, Any]:
         """Fetch athlete profile details."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("GET", f"athlete/{target_id}")
+        cache_key = f"profile:{target_id}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await self._request("GET", f"athlete/{target_id}")
+        await self._cache.set(cache_key, result)
+        return result
 
     async def get_sport_settings(self, athlete_id: str | None = None) -> list[dict[str, Any]]:
         """Fetch athlete sport settings (power, HR, pace zones)."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("GET", f"athlete/{target_id}/sport-settings")
+        cache_key = f"sport_settings:{target_id}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await self._request("GET", f"athlete/{target_id}/sport-settings")
+        await self._cache.set(cache_key, result)
+        return result
 
     # ---------------------------------------------------------------------------
     # Activities API Methods
@@ -349,7 +366,13 @@ class IntervalsClient:
     async def list_folders(self, athlete_id: str | None = None) -> list[dict[str, Any]]:
         """List workout folders in library."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("GET", f"athlete/{target_id}/folders")
+        cache_key = f"folders:{target_id}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await self._request("GET", f"athlete/{target_id}/folders")
+        await self._cache.set(cache_key, result)
+        return result
 
     async def list_workouts(
         self,
