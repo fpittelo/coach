@@ -40,7 +40,7 @@ packages = ["src/coach_mcp"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = [
-    "ignore:Field 'lifespan' has an incomplete definition:pydantic_settings.sources.utils.IncompleteFieldDefinitionWarning",
+    "ignore:Field 'lifespan' has an incomplete definition",
 ]
 
 [tool.ruff]
