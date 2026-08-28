@@ -9,6 +9,7 @@ import httpx
 
 from coach_mcp.cache import TTLCache
 from coach_mcp.config import settings
+from coach_mcp.security import redact_sensitive
 
 logger = logging.getLogger("coach_mcp.client")
 if not logger.handlers:
@@ -27,6 +28,16 @@ class IntervalsAPIError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response_text = response_text
+
+    def __str__(self) -> str:
+        """Return a sanitized string representation with secrets redacted."""
+        message = redact_sensitive(str(self.args[0])) if self.args else "IntervalsAPIError"
+        parts = [message]
+        if self.status_code is not None:
+            parts.append(f"status_code={self.status_code}")
+        if self.response_text:
+            parts.append(f"response_text={redact_sensitive(self.response_text)}")
+        return " ".join(parts)
 
 
 class IntervalsAuthError(IntervalsAPIError):
@@ -107,7 +118,13 @@ class IntervalsClient:
         while True:
             attempt += 1
             try:
-                logger.debug(f"Request: {method} {url} (attempt {attempt}/{self.max_retries})")
+                logger.debug(
+                    "Request: %s %s (attempt %d/%d)",
+                    method,
+                    redact_sensitive(url),
+                    attempt,
+                    self.max_retries,
+                )
                 response = await client.request(
                     method=method,
                     url=url,

@@ -467,7 +467,7 @@ async def test_intervals_get_power_curve_error(mock_ctx, mock_client):
     )
     mock_ctx.request_context.lifespan_state["client"] = mock_client
 
-    params = GetPowerCurveInput(athlete_id="missing")
+    params = GetPowerCurveInput(athlete_id="i999")
     result = await intervals_get_power_curve(params, mock_ctx)
 
     assert "Error fetching power curve" in result
