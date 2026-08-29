@@ -151,9 +151,7 @@ def test_valid_athlete_id_patterns():
     assert GetAthleteProfileInput(athlete_id="i123").athlete_id == "i123"
     assert GetAthleteProfileInput(athlete_id="i0").athlete_id == "i0"
     assert GetSportSettingsInput(athlete_id="i99999").athlete_id == "i99999"
-    model = ListActivitiesInput(
-        oldest="2026-08-01", newest="2026-08-22", athlete_id="0"
-    )
+    model = ListActivitiesInput(oldest="2026-08-01", newest="2026-08-22", athlete_id="0")
     assert model.athlete_id == "0"
 
 
@@ -168,9 +166,7 @@ def test_valid_event_id_patterns():
     """Event IDs with alphanumeric, underscore, and hyphen are accepted."""
     assert GetEventInput(event_id="evt_123").event_id == "evt_123"
     assert GetEventInput(event_id="evt-456").event_id == "evt-456"
-    model = CreateEventInput(
-        start_date_local="2026-08-23T08:00:00", name="Test"
-    )
+    model = CreateEventInput(start_date_local="2026-08-23T08:00:00", name="Test")
     assert model.start_date_local == "2026-08-23T08:00:00"
 
 

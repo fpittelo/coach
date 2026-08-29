@@ -1,7 +1,9 @@
 """Formatters to render Intervals.icu data into structured JSON and agent-friendly Markdown."""
 
 import json
-from typing import Any
+from typing import Any, cast
+
+from coach_mcp.models import ResponseFormat
 
 from coach_mcp.models import ResponseFormat
 
@@ -221,6 +223,54 @@ def format_wellness_list(wellness_list: list[dict[str, Any]], fmt_json: bool = F
     return "\n".join(lines)
 
 
+def _compute_fitness_metrics(wellness_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract latest CTL, ATL, TSB, and ramp rate from wellness entries."""
+    if not wellness_entries:
+        return {
+            "ctl": None,
+            "atl": None,
+            "tsb": None,
+            "ramp_rate": None,
+            "date": None,
+        }
+
+    latest = wellness_entries[-1]
+    ctl = latest.get("ctl")
+    atl = latest.get("atl")
+    tsb = latest.get("tsb")
+    if ctl is not None and atl is not None and tsb is None:
+        tsb = ctl - atl
+    ramp_rate = latest.get("rampRate")
+    if ramp_rate is None and len(wellness_entries) >= 2:
+        previous = wellness_entries[-2]
+        prev_ctl = previous.get("ctl")
+        if prev_ctl is not None and ctl is not None:
+            ramp_rate = round(ctl - prev_ctl, 1)
+
+    return {
+        "ctl": ctl,
+        "atl": atl,
+        "tsb": tsb,
+        "ramp_rate": ramp_rate,
+        "date": latest.get("id"),
+    }
+
+
+def _form_status(tsb: float | None) -> str:
+    """Map TSB value to a training status label."""
+    if tsb is None:
+        return "Unknown"
+    if tsb > 25:
+        return "Transition / Detraining (TSB > +25)"
+    if 10 <= tsb <= 25:
+        return "Fresh / Peak Race Performance (+10 to +25)"
+    if -10 <= tsb < 10:
+        return "Neutral / Productive Training (-10 to +10)"
+    if -30 <= tsb < -10:
+        return "Optimal Overload / Building Fitness (-30 to -10)"
+    return "High Fatigue / Overreaching Risk (TSB < -30)"
+
+
 def format_fitness_summary(wellness_list: list[dict[str, Any]], fmt_json: bool = False) -> str:
     """Format CTL (Fitness), ATL (Fatigue), and TSB (Form) summary."""
     if fmt_json:
@@ -229,31 +279,27 @@ def format_fitness_summary(wellness_list: list[dict[str, Any]], fmt_json: bool =
     if not wellness_list:
         return "No fitness tracking records found."
 
-    latest = wellness_list[-1]
-    date_str = latest.get("id", "Recent")
-    ctl = latest.get("ctl", 0.0)
-    atl = latest.get("atl", 0.0)
-    tsb = ctl - atl if ctl is not None and atl is not None else latest.get("tsb", 0.0)
-    ramp_rate = latest.get("rampRate", "N/A")
+    metrics = _compute_fitness_metrics(wellness_list)
+    date_str = metrics.get("date", "Recent") or "Recent"
+    ctl = metrics.get("ctl", 0.0)
+    atl = metrics.get("atl", 0.0)
+    tsb = metrics.get("tsb", 0.0)
+    ramp_rate = metrics.get("ramp_rate", "N/A")
+    form_status = _form_status(tsb)
 
-    # Form interpretation
-    if tsb > 25:
-        form_status = "Transition / Detraining (TSB > +25)"
-    elif 10 <= tsb <= 25:
-        form_status = "Fresh / Peak Race Performance (+10 to +25)"
-    elif -10 <= tsb < 10:
-        form_status = "Neutral / Productive Training (-10 to +10)"
-    elif -30 <= tsb < -10:
-        form_status = "Optimal Overload / Building Fitness (-30 to -10)"
-    else:
-        form_status = "High Fatigue / Overreaching Risk (TSB < -30)"
+    ctl_label = "CTL (Fitness / Chronic Training Load)"
+    atl_label = "ATL (Fatigue / Acute Training Load)"
+    tsb_label = "TSB (Form / Training Stress Balance)"
+    ctl_line = f"- **{ctl_label}**: {ctl:.1f}" if ctl is not None else f"- **{ctl_label}**: N/A"
+    atl_line = f"- **{atl_label}**: {atl:.1f}" if atl is not None else f"- **{atl_label}**: N/A"
+    tsb_line = f"- **{tsb_label}**: {tsb:.1f}" if tsb is not None else f"- **{tsb_label}**: N/A"
 
     lines = [
         f"# Training Load & Fitness Status ({date_str})",
         "",
-        f"- **CTL (Fitness / Chronic Training Load)**: {ctl:.1f}",
-        f"- **ATL (Fatigue / Acute Training Load)**: {atl:.1f}",
-        f"- **TSB (Form / Training Stress Balance)**: {tsb:.1f}",
+        ctl_line,
+        atl_line,
+        tsb_line,
         f"- **Ramp Rate**: {ramp_rate}",
         f"- **Form Assessment**: **{form_status}**",
         "",
@@ -269,6 +315,162 @@ def format_fitness_summary(wellness_list: list[dict[str, Any]], fmt_json: bool =
         t = c - a if c is not None and a is not None else item.get("tsb", 0.0)
         ld = item.get("load", item.get("training_load", "-"))
         lines.append(f"| {d} | {c:.1f} | {a:.1f} | {t:.1f} | {ld} |")
+
+    return "\n".join(lines)
+
+
+def _extract_cycling_settings(sport_settings: Any) -> dict[str, Any]:
+    """Select the cycling sport settings from a list or dict payload."""
+    if not sport_settings:
+        return {}
+
+    settings_list = sport_settings if isinstance(sport_settings, list) else [sport_settings]
+    for sport in settings_list:
+        types = sport.get("types", [])
+        if isinstance(types, list) and "Ride" in types:
+            return cast(dict[str, Any], sport)
+    return cast(dict[str, Any], settings_list[0])
+
+
+def _sleep_hours(seconds: Any) -> str:
+    """Convert sleep seconds to a readable hours label."""
+    try:
+        return f"{float(seconds) / 3600:.1f} h"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _recommendation(metrics: dict[str, Any], latest: dict[str, Any] | None) -> str:
+    """Generate an actionable coaching recommendation from TSB and wellness."""
+    tsb = metrics.get("tsb")
+    readiness = latest.get("readiness") if latest else None
+    soreness = latest.get("soreness") if latest else None
+    fatigue = latest.get("fatigue") if latest else None
+
+    if readiness is not None and readiness < 50:
+        return (
+            "Low readiness score — prioritize recovery, sleep, "
+            "and easy movement today."
+        )
+    if (soreness is not None and soreness >= 3) or (fatigue is not None and fatigue >= 3):
+        return "Elevated soreness/fatigue — reduce intensity and focus on recovery."
+    if tsb is None:
+        return (
+            "Insufficient fitness data — follow your planned schedule "
+            "and monitor recovery."
+        )
+    if tsb > 25:
+        return "Fresh — suitable for high-intensity session or race performance."
+    if 10 <= tsb <= 25:
+        return "Optimal — proceed with planned training including quality work."
+    if -10 <= tsb < 10:
+        return "Productive — maintain planned load with attention to recovery."
+    if -30 <= tsb < -10:
+        return "Overload — keep volume moderate, prioritize sleep and nutrition."
+    return "High fatigue — take a rest day or very easy spin."
+
+
+def format_readiness_dashboard(
+    wellness_data: list[dict[str, Any]],
+    sport_settings: Any,
+    fmt_json: bool = False,
+) -> str:
+    """Format composite daily readiness dashboard from wellness and sport settings."""
+    latest = wellness_data[-1] if wellness_data else {}
+    metrics = _compute_fitness_metrics(wellness_data)
+    cycling = _extract_cycling_settings(sport_settings)
+    recommendation = _recommendation(metrics, latest if latest else None)
+
+    if fmt_json:
+        sleep_secs = latest.get("sleepSecs")
+        return to_json_str(
+            {
+                "date": metrics.get("date"),
+                "wellness": {
+                    "hrv": latest.get("hrv"),
+                    "resting_hr": latest.get("restingHR"),
+                    "sleep_hours": _sleep_hours(sleep_secs) if sleep_secs is not None else None,
+                    "sleep_quality": latest.get("sleepQuality"),
+                    "readiness_score": latest.get("readiness"),
+                    "soreness": latest.get("soreness"),
+                    "fatigue": latest.get("fatigue"),
+                    "stress": latest.get("stress"),
+                },
+                "fitness": {
+                    "ctl": metrics.get("ctl"),
+                    "atl": metrics.get("atl"),
+                    "tsb": metrics.get("tsb"),
+                    "ramp_rate": metrics.get("ramp_rate"),
+                    "status": _form_status(metrics.get("tsb")),
+                },
+                "cycling_parameters": {
+                    "ftp_watts": cycling.get("ftp"),
+                    "indoor_ftp_watts": cycling.get("indoor_ftp"),
+                    "lthr_bpm": cycling.get("lthr"),
+                    "max_hr_bpm": cycling.get("max_hr"),
+                    "power_zones": cycling.get("power_zones", []),
+                },
+                "recommendation": recommendation,
+            }
+        )
+
+    date_str = metrics.get("date") or "Latest"
+    hrv = latest.get("hrv", "N/A")
+    resting_hr = latest.get("restingHR", "N/A")
+    sleep_secs = latest.get("sleepSecs")
+    sleep = _sleep_hours(sleep_secs) if sleep_secs is not None else "N/A"
+    readiness = latest.get("readiness", "N/A")
+    soreness = latest.get("soreness", "N/A")
+    fatigue = latest.get("fatigue", "N/A")
+    stress = latest.get("stress", "N/A")
+
+    ctl = metrics.get("ctl")
+    atl = metrics.get("atl")
+    tsb = metrics.get("tsb")
+    ramp_rate = metrics.get("ramp_rate", "N/A")
+    status = _form_status(tsb)
+
+    ftp = cycling.get("ftp", "N/A")
+    indoor_ftp = cycling.get("indoor_ftp", "N/A")
+    lthr = cycling.get("lthr", "N/A")
+    max_hr = cycling.get("max_hr", "N/A")
+    power_zones = cycling.get("power_zones", [])
+
+    ctl_line = f"- **CTL (Fitness)**: {ctl:.1f}" if ctl is not None else "- **CTL (Fitness)**: N/A"
+    atl_line = f"- **ATL (Fatigue)**: {atl:.1f}" if atl is not None else "- **ATL (Fatigue)**: N/A"
+    tsb_line = f"- **TSB (Form)**: {tsb:.1f}" if tsb is not None else "- **TSB (Form)**: N/A"
+
+    lines = [
+        "# Daily Readiness & Training Dashboard",
+        "",
+        f"## Today's Wellness ({date_str})",
+        f"- **HRV (rMSSD)**: {hrv} ms",
+        f"- **Resting HR**: {resting_hr} bpm",
+        f"- **Sleep**: {sleep}",
+        f"- **Readiness Score**: {readiness}",
+        f"- **Soreness**: {soreness}",
+        f"- **Fatigue**: {fatigue}",
+        f"- **Stress**: {stress}",
+        "",
+        "## Banister Fitness & Form",
+        ctl_line,
+        atl_line,
+        tsb_line,
+        f"- **Ramp Rate**: {ramp_rate}",
+        f"- **Status**: **{status}**",
+        "",
+        "## Active Cycling Parameters",
+        f"- **FTP**: {ftp} W (Indoor: {indoor_ftp} W)",
+        f"- **LTHR**: {lthr} bpm | **Max HR**: {max_hr} bpm",
+    ]
+
+    if power_zones:
+        zones_str = ", ".join(f"Z{i + 1}: {z}W" for i, z in enumerate(power_zones))
+        lines.append(f"- **Power Zones**: {zones_str}")
+    else:
+        lines.append("- **Power Zones**: Not configured")
+
+    lines.extend(["", "## Coaching Recommendation", recommendation])
 
     return "\n".join(lines)
 
@@ -455,5 +657,58 @@ def format_power_curve(
         wkg = point.get("wkg", "-")
         sport = point.get("sport", "-")
         lines.append(f"| {duration} | {watts} | {wkg} | {sport} |")
+
+    return "\n".join(lines)
+
+
+def format_power_model(data: dict[str, Any], fmt_json: bool = False) -> str:
+    """Format critical power (CP), W', and Pmax model as markdown or JSON."""
+    if fmt_json:
+        return to_json_str(data)
+
+    if not data:
+        return "# Critical Power Model\n\nNo power model data available."
+
+    sport_type = data.get("sport_type", data.get("type", "Ride"))
+    lines = [f"# Critical Power Model ({sport_type})", ""]
+
+    # Critical Power (CP) - check multiple possible field names
+    cp = data.get("cp", data.get("ftp"))
+    if cp is None:
+        cp = data.get("critical_power")
+    if cp is not None:
+        lines.append(f"- **Critical Power (CP)**: {cp} W")
+
+    # Anaerobic Work Capacity (W')
+    w_prime = data.get("wPrime", data.get("w_prime", data.get("wprime")))
+    if w_prime is None:
+        w_prime = data.get("anaerobic_work_capacity")
+    if w_prime is not None:
+        # Display in kJ if value is large (Joules), otherwise assume kJ
+        if isinstance(w_prime, (int, float)) and w_prime >= 1000:
+            w_prime_kj = w_prime / 1000
+            lines.append(f"- **Anaerobic Work Capacity ($W'$)**: {w_prime} J ({w_prime_kj:.1f} kJ)")
+        else:
+            lines.append(f"- **Anaerobic Work Capacity ($W'$)**: {w_prime} kJ")
+
+    # Peak Neuromuscular Power (Pmax)
+    p_max = data.get("pMax", data.get("p_max", data.get("pmax")))
+    if p_max is None:
+        p_max = data.get("peak_power")
+    if p_max is not None:
+        lines.append(f"- **Peak Neuromuscular Power ($P_{{max}}$)**: {p_max} W")
+
+    # Model Type / Name
+    model_type = data.get("model", data.get("name", data.get("fit_type", data.get("type"))))
+    if model_type is not None and model_type != sport_type:
+        lines.append(f"- **Model Type**: {model_type}")
+
+    # Estimated/Model FTP if available and distinct from CP
+    ftp = data.get("ftp")
+    if ftp is not None and ftp != cp:
+        lines.append(f"- **Estimated FTP**: {ftp} W")
+
+    if len(lines) == 2:
+        lines.append("No model parameters found in response.")
 
     return "\n".join(lines)

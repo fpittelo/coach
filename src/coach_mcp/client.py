@@ -269,8 +269,24 @@ class IntervalsClient:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Retrieve athlete mean-maximal power (MMP) curve for a sport type."""
         target_id = self._resolve_athlete(athlete_id)
-        params = {"curves": sport_type}
+        params = {"type": sport_type}
         return await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
+
+    async def get_power_model(
+        self,
+        athlete_id: str | None = None,
+        sport_type: str = "Ride",
+    ) -> dict[str, Any]:
+        """Retrieve athlete critical power (CP), W', and Pmax model."""
+        target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"power_model:{target_id}:{sport_type}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        params = {"type": sport_type}
+        result = await self._request("GET", f"athlete/{target_id}/mmp-model", params=params)
+        await self._cache.set(cache_key, result)
+        return result
 
     async def get_activity_power_curve(
         self,
@@ -284,9 +300,15 @@ class IntervalsClient:
         payload: dict[str, Any],
         athlete_id: str | None = None,
     ) -> dict[str, Any]:
-        """Manually record a new activity."""
-        target_id = self._resolve_athlete(athlete_id)
-        return await self._request("POST", f"athlete/{target_id}/activities", json_data=payload)
+        """Manually record a new activity via the events endpoint.
+
+        Intervals.icu expects manual completed activities to be created as
+        calendar events with category ``PAST_ACTIVITY``. The legacy
+        ``POST /athlete/{id}/activities`` endpoint is reserved for uploading
+        activity files (FIT/TCX/GPX) as multipart/form-data.
+        """
+        activity_payload = {**payload, "category": payload.get("category", "PAST_ACTIVITY")}
+        return await self.create_event(activity_payload, athlete_id=athlete_id)
 
     async def update_activity(
         self,

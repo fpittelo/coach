@@ -1,8 +1,9 @@
 """Pydantic v2 input and output models for Coach MCP."""
 
+from datetime import date, timedelta
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ResponseFormat(StrEnum):
@@ -63,14 +64,14 @@ class GetSportSettingsInput(BaseToolModel):
 class ListActivitiesInput(BaseToolModel):
     """Input parameters for listing athlete activities."""
 
-    oldest: str = Field(
-        ...,
-        description="Start date in ISO format YYYY-MM-DD (e.g. '2026-08-01').",
+    oldest: str | None = Field(
+        default=None,
+        description="Oldest date (YYYY-MM-DD). Defaults to 30 days ago.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    newest: str = Field(
-        ...,
-        description="End date in ISO format YYYY-MM-DD (e.g. '2026-08-22').",
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
     athlete_id: str | None = Field(
@@ -88,6 +89,15 @@ class ListActivitiesInput(BaseToolModel):
         default=ResponseFormat.MARKDOWN,
         description="Output format: 'markdown' or 'json'.",
     )
+
+    @model_validator(mode="after")
+    def _set_default_dates(self) -> "ListActivitiesInput":
+        """Populate default date range when not provided."""
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=30)).isoformat()
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        return self
 
 
 class GetActivityInput(BaseToolModel):
@@ -161,6 +171,24 @@ class GetPowerCurveInput(BaseToolModel):
     sport_type: str = Field(
         default="Ride",
         description="Sport type for athlete power curve (e.g., 'Ride', 'Run').",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+
+class GetPowerModelInput(BaseToolModel):
+    """Input parameters for retrieving athlete critical power model."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    sport_type: str = Field(
+        default="Ride",
+        description="Sport type for the power model (e.g., 'Ride', 'Run').",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -245,14 +273,14 @@ class DeleteActivityInput(BaseToolModel):
 class GetWellnessInput(BaseToolModel):
     """Input parameters for fetching wellness & fitness history."""
 
-    oldest: str = Field(
-        ...,
-        description="Start date in ISO format YYYY-MM-DD.",
+    oldest: str | None = Field(
+        default=None,
+        description="Oldest date (YYYY-MM-DD). Defaults to 7 days ago.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    newest: str = Field(
-        ...,
-        description="End date in ISO format YYYY-MM-DD.",
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
     athlete_id: str | None = Field(
@@ -263,6 +291,15 @@ class GetWellnessInput(BaseToolModel):
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
+
+    @model_validator(mode="after")
+    def _set_default_dates(self) -> "GetWellnessInput":
+        """Populate default date range when not provided."""
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=7)).isoformat()
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        return self
 
 
 class RecordWellnessInput(BaseToolModel):
@@ -309,14 +346,14 @@ class RecordWellnessInput(BaseToolModel):
 class GetFitnessSummaryInput(BaseToolModel):
     """Input parameters for calculating CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
 
-    oldest: str = Field(
-        ...,
-        description="Start date in ISO format YYYY-MM-DD.",
+    oldest: str | None = Field(
+        default=None,
+        description="Oldest date (YYYY-MM-DD). Defaults to 42 days ago (6 weeks).",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    newest: str = Field(
-        ...,
-        description="End date in ISO format YYYY-MM-DD.",
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
     athlete_id: str | None = Field(
@@ -328,6 +365,35 @@ class GetFitnessSummaryInput(BaseToolModel):
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
 
+    @model_validator(mode="after")
+    def _set_default_dates(self) -> "GetFitnessSummaryInput":
+        """Populate default date range when not provided."""
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=42)).isoformat()
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        return self
+
+
+class GetReadinessDashboardInput(BaseToolModel):
+    """Input parameters for composite daily readiness dashboard."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    days: int = Field(
+        default=7,
+        ge=1,
+        le=30,
+        description="Number of days of wellness/fitness history to analyze (default: 7).",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
@@ -337,14 +403,14 @@ class GetFitnessSummaryInput(BaseToolModel):
 class ListEventsInput(BaseToolModel):
     """Input parameters for retrieving calendar events and scheduled workouts."""
 
-    oldest: str = Field(
-        ...,
-        description="Start date in ISO format YYYY-MM-DD.",
+    oldest: str | None = Field(
+        default=None,
+        description="Oldest date (YYYY-MM-DD). Defaults to today.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
-    newest: str = Field(
-        ...,
-        description="End date in ISO format YYYY-MM-DD.",
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to 30 days from today.",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
     )
     athlete_id: str | None = Field(
@@ -359,6 +425,15 @@ class ListEventsInput(BaseToolModel):
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN, description="Output format."
     )
+
+    @model_validator(mode="after")
+    def _set_default_dates(self) -> "ListEventsInput":
+        """Populate default date range when not provided."""
+        if self.oldest is None:
+            self.oldest = date.today().isoformat()
+        if self.newest is None:
+            self.newest = (date.today() + timedelta(days=30)).isoformat()
+        return self
 
 
 class GetEventInput(BaseToolModel):

@@ -164,7 +164,7 @@ async def test_get_activity_intervals_success(client: IntervalsClient):
 async def test_get_power_curve_success(client: IntervalsClient):
     """Test successful athlete power curve retrieval."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/0/power-curves?curves=Ride").respond(
+        respx_mock.get("/athlete/0/power-curves?type=Ride").respond(
             200,
             json={
                 "Ride": {
@@ -186,7 +186,7 @@ async def test_get_power_curve_success(client: IntervalsClient):
 async def test_get_power_curve_with_sport_type(client: IntervalsClient):
     """Test athlete power curve retrieval with explicit sport type."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/0/power-curves?curves=Run").respond(
+        respx_mock.get("/athlete/0/power-curves?type=Run").respond(
             200,
             json={"Run": {"60": 320}},
         )
@@ -200,7 +200,7 @@ async def test_get_power_curve_with_sport_type(client: IntervalsClient):
 async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
     """Test athlete power curve retrieval with explicit athlete_id."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/i123/power-curves?curves=Ride").respond(
+        respx_mock.get("/athlete/i123/power-curves?type=Ride").respond(
             200,
             json={"Ride": {"60": 310}},
         )
@@ -208,6 +208,85 @@ async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
         data = await client.get_power_curve(athlete_id="i123")
         assert data["Ride"]["60"] == 310
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_success(client: IntervalsClient):
+    """Test successful athlete power model retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/mmp-model?type=Ride").respond(
+            200,
+            json={
+                "cp": 300,
+                "wPrime": 20000,
+                "pMax": 1200,
+                "model": "Morton",
+                "ftp": 300,
+            },
+        )
+
+        data = await client.get_power_model()
+        assert data["cp"] == 300
+        assert data["wPrime"] == 20000
+        assert data["pMax"] == 1200
+        assert data["model"] == "Morton"
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_with_sport_type(client: IntervalsClient):
+    """Test athlete power model retrieval with explicit sport type."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/mmp-model?type=Run").respond(
+            200,
+            json={"cp": 320, "wPrime": 15000, "pMax": 1000},
+        )
+
+        data = await client.get_power_model(sport_type="Run")
+        assert data["cp"] == 320
+        assert data["wPrime"] == 15000
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_with_athlete_id(client: IntervalsClient):
+    """Test athlete power model retrieval with explicit athlete_id."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/i123/mmp-model?type=Ride").respond(
+            200,
+            json={"cp": 310, "wPrime": 22000, "pMax": 1150},
+        )
+
+        data = await client.get_power_model(athlete_id="i123")
+        assert data["cp"] == 310
+        assert data["wPrime"] == 22000
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_is_cached():
+    """Power model should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/mmp-model?type=Ride").respond(
+            200,
+            json={"cp": 300, "wPrime": 20000, "pMax": 1200},
+        )
+
+        first = await client.get_power_model()
+        second = await client.get_power_model()
+
+        assert first["cp"] == 300
+        assert second["cp"] == 300
+        assert route.call_count == 1
+
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -242,11 +321,33 @@ async def test_get_activity_power_curve_not_found(client: IntervalsClient):
 
 @pytest.mark.asyncio
 async def test_create_activity_success(client: IntervalsClient):
-    """Test successful activity creation."""
+    """Test successful manual activity creation uses events endpoint."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        route = respx_mock.post("/athlete/0/activities").respond(
+        route = respx_mock.post("/athlete/0/events").respond(
             201,
-            json={"id": "i999", "name": "Manual Entry"},
+            json={"id": "i999", "name": "Manual Entry", "category": "PAST_ACTIVITY"},
+        )
+
+        payload = {
+            "name": "Manual Entry",
+            "type": "Ride",
+            "start_date_local": "2026-08-22T10:00:00",
+            "moving_time": 3600,
+            "category": "PAST_ACTIVITY",
+        }
+        res = await client.create_activity(payload)
+        assert res["id"] == "i999"
+        assert json.loads(route.calls.last.request.content) == payload
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_activity_defaults_category(client: IntervalsClient):
+    """Test create_activity defaults category to PAST_ACTIVITY when omitted."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/athlete/0/events").respond(
+            201,
+            json={"id": "i999", "name": "Manual Entry", "category": "PAST_ACTIVITY"},
         )
 
         payload = {
@@ -257,7 +358,8 @@ async def test_create_activity_success(client: IntervalsClient):
         }
         res = await client.create_activity(payload)
         assert res["id"] == "i999"
-        assert json.loads(route.calls.last.request.content) == payload
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["category"] == "PAST_ACTIVITY"
         await client.close()
 
 
@@ -793,12 +895,8 @@ async def test_dynamic_endpoints_are_not_cached():
             json=[{"id": "act1", "name": "Endurance Ride"}],
         )
 
-        first = await client.list_activities(
-            oldest="2026-08-01", newest="2026-08-22", limit=10
-        )
-        second = await client.list_activities(
-            oldest="2026-08-01", newest="2026-08-22", limit=10
-        )
+        first = await client.list_activities(oldest="2026-08-01", newest="2026-08-22", limit=10)
+        second = await client.list_activities(oldest="2026-08-01", newest="2026-08-22", limit=10)
 
         assert first[0]["name"] == "Endurance Ride"
         assert second[0]["name"] == "Endurance Ride"
