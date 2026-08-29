@@ -284,9 +284,15 @@ class IntervalsClient:
         payload: dict[str, Any],
         athlete_id: str | None = None,
     ) -> dict[str, Any]:
-        """Manually record a new activity."""
-        target_id = self._resolve_athlete(athlete_id)
-        return await self._request("POST", f"athlete/{target_id}/activities", json_data=payload)
+        """Manually record a new activity via the events endpoint.
+
+        Intervals.icu expects manual completed activities to be created as
+        calendar events with category ``PAST_ACTIVITY``. The legacy
+        ``POST /athlete/{id}/activities`` endpoint is reserved for uploading
+        activity files (FIT/TCX/GPX) as multipart/form-data.
+        """
+        activity_payload = {**payload, "category": payload.get("category", "PAST_ACTIVITY")}
+        return await self.create_event(activity_payload, athlete_id=athlete_id)
 
     async def update_activity(
         self,

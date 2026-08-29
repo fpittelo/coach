@@ -242,11 +242,33 @@ async def test_get_activity_power_curve_not_found(client: IntervalsClient):
 
 @pytest.mark.asyncio
 async def test_create_activity_success(client: IntervalsClient):
-    """Test successful activity creation."""
+    """Test successful manual activity creation uses events endpoint."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        route = respx_mock.post("/athlete/0/activities").respond(
+        route = respx_mock.post("/athlete/0/events").respond(
             201,
-            json={"id": "i999", "name": "Manual Entry"},
+            json={"id": "i999", "name": "Manual Entry", "category": "PAST_ACTIVITY"},
+        )
+
+        payload = {
+            "name": "Manual Entry",
+            "type": "Ride",
+            "start_date_local": "2026-08-22T10:00:00",
+            "moving_time": 3600,
+            "category": "PAST_ACTIVITY",
+        }
+        res = await client.create_activity(payload)
+        assert res["id"] == "i999"
+        assert json.loads(route.calls.last.request.content) == payload
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_activity_defaults_category(client: IntervalsClient):
+    """Test create_activity defaults category to PAST_ACTIVITY when omitted."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/athlete/0/events").respond(
+            201,
+            json={"id": "i999", "name": "Manual Entry", "category": "PAST_ACTIVITY"},
         )
 
         payload = {
@@ -257,7 +279,8 @@ async def test_create_activity_success(client: IntervalsClient):
         }
         res = await client.create_activity(payload)
         assert res["id"] == "i999"
-        assert json.loads(route.calls.last.request.content) == payload
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["category"] == "PAST_ACTIVITY"
         await client.close()
 
 
