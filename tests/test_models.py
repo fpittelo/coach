@@ -15,6 +15,7 @@ from coach_mcp.models import (
     GetEventInput,
     GetFitnessSummaryInput,
     GetPowerCurveInput,
+    GetPowerModelInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -251,6 +252,48 @@ def test_get_power_curve_input_extra_forbid():
     """Test GetPowerCurveInput rejects extra fields."""
     with pytest.raises(ValidationError):
         GetPowerCurveInput(extra=True)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Power Model (CP/W'/Pmax) Models
+# ---------------------------------------------------------------------------
+
+
+def test_get_power_model_input_defaults():
+    """Test GetPowerModelInput defaults."""
+    model = GetPowerModelInput()
+    assert model.athlete_id is None
+    assert model.sport_type == "Ride"
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_get_power_model_input_athlete_and_sport():
+    """Test GetPowerModelInput with athlete_id and sport_type."""
+    model = GetPowerModelInput(athlete_id="i456", sport_type="Run")
+    assert model.athlete_id == "i456"
+    assert model.sport_type == "Run"
+
+
+def test_get_power_model_input_response_format():
+    """Test GetPowerModelInput response format choices."""
+    model_json = GetPowerModelInput(athlete_id="0", response_format=ResponseFormat.JSON)
+    assert model_json.athlete_id == "0"
+    assert model_json.response_format == ResponseFormat.JSON
+
+
+def test_get_power_model_input_athlete_id_validation():
+    """Test GetPowerModelInput athlete_id regex validation."""
+    valid = GetPowerModelInput(athlete_id="i12345")
+    assert valid.athlete_id == "i12345"
+
+    with pytest.raises(ValidationError):
+        GetPowerModelInput(athlete_id="invalid")
+
+
+def test_get_power_model_input_extra_forbid():
+    """Test GetPowerModelInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        GetPowerModelInput(extra=True)  # type: ignore
 
 
 def test_create_activity_input_valid():

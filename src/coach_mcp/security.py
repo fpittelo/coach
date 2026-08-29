@@ -9,17 +9,13 @@ _BASIC_AUTH_RE = re.compile(r"Basic\s+[A-Za-z0-9+/=]+", re.IGNORECASE)
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._-]+", re.IGNORECASE)
 
 # API keys in URL query parameters: key=value
-_API_KEY_QUERY_RE = re.compile(
-    r"(api_key|apikey|key)\s*=\s*[A-Za-z0-9_-]+", re.IGNORECASE
-)
+_API_KEY_QUERY_RE = re.compile(r"(api_key|apikey|key)\s*=\s*[A-Za-z0-9_-]+", re.IGNORECASE)
 
 # APIKEY prefix header style: APIKEY <value>
 _API_KEY_HEADER_RE = re.compile(r"APIKEY\s+[A-Za-z0-9_-]+", re.IGNORECASE)
 
 # General key/value patterns using colon separator: key: value
-_API_KEY_COLON_RE = re.compile(
-    r"(?:api_key|apikey|key):\s*[A-Za-z0-9_-]+", re.IGNORECASE
-)
+_API_KEY_COLON_RE = re.compile(r"(?:api_key|apikey|key):\s*[A-Za-z0-9_-]+", re.IGNORECASE)
 
 # Email addresses
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
