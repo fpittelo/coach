@@ -235,6 +235,18 @@ def test_get_power_curve_input_athlete_and_sport():
     assert model.activity_id is None
 
 
+def test_get_power_curve_input_sport_type_validation():
+    """Test GetPowerCurveInput sport_type default and custom values."""
+    default_model = GetPowerCurveInput()
+    assert default_model.sport_type == "Ride"
+
+    run_model = GetPowerCurveInput(sport_type="Run")
+    assert run_model.sport_type == "Run"
+
+    swim_model = GetPowerCurveInput(sport_type="Swim")
+    assert swim_model.sport_type == "Swim"
+
+
 def test_get_power_curve_input_extra_forbid():
     """Test GetPowerCurveInput rejects extra fields."""
     with pytest.raises(ValidationError):

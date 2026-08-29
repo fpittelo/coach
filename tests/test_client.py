@@ -164,7 +164,7 @@ async def test_get_activity_intervals_success(client: IntervalsClient):
 async def test_get_power_curve_success(client: IntervalsClient):
     """Test successful athlete power curve retrieval."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/0/power-curves?curves=Ride").respond(
+        respx_mock.get("/athlete/0/power-curves?type=Ride").respond(
             200,
             json={
                 "Ride": {
@@ -186,7 +186,7 @@ async def test_get_power_curve_success(client: IntervalsClient):
 async def test_get_power_curve_with_sport_type(client: IntervalsClient):
     """Test athlete power curve retrieval with explicit sport type."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/0/power-curves?curves=Run").respond(
+        respx_mock.get("/athlete/0/power-curves?type=Run").respond(
             200,
             json={"Run": {"60": 320}},
         )
@@ -200,7 +200,7 @@ async def test_get_power_curve_with_sport_type(client: IntervalsClient):
 async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
     """Test athlete power curve retrieval with explicit athlete_id."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
-        respx_mock.get("/athlete/i123/power-curves?curves=Ride").respond(
+        respx_mock.get("/athlete/i123/power-curves?type=Ride").respond(
             200,
             json={"Ride": {"60": 310}},
         )
