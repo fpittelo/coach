@@ -18,6 +18,7 @@ from coach_mcp.formatters import (
     format_power_curve,
     format_power_model,
     format_profile,
+    format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
     format_workouts,
@@ -36,6 +37,7 @@ from coach_mcp.models import (
     GetFitnessSummaryInput,
     GetPowerCurveInput,
     GetPowerModelInput,
+    GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -61,6 +63,7 @@ from coach_mcp.server import (
     intervals_get_fitness_summary,
     intervals_get_power_curve,
     intervals_get_power_model,
+    intervals_get_readiness_dashboard,
     intervals_get_sport_settings,
     intervals_get_wellness,
     intervals_list_activities,
@@ -125,6 +128,7 @@ def test_tools_registered():
         "intervals_get_wellness",
         "intervals_record_wellness",
         "intervals_get_fitness_summary",
+        "intervals_get_readiness_dashboard",
         "intervals_list_events",
         "intervals_get_event",
         "intervals_create_event",
@@ -737,6 +741,82 @@ async def test_intervals_get_fitness_summary_default_dates(mock_date, mock_ctx, 
     )
 
 
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_markdown(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool returns markdown."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_client.get_sport_settings = AsyncMock(
+        return_value=[{"types": ["Ride"], "ftp": 300}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput(days=7, response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Daily Readiness & Training Dashboard" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-08-23", newest="2026-08-29", athlete_id=None
+    )
+    mock_client.get_sport_settings.assert_awaited_once_with(athlete_id=None)
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_json(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool returns JSON."""
+    import json
+
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_client.get_sport_settings = AsyncMock(return_value=[{"ftp": 300}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput(response_format=ResponseFormat.JSON)
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    data = json.loads(result)
+    assert data["fitness"]["ctl"] == 52.0
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_empty(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool handles empty wellness data."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_client.get_sport_settings = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Daily Readiness & Training Dashboard" in result
+    assert "N/A" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_api_error(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool handles API errors gracefully."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("Server error", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Error fetching readiness dashboard" in result
+    assert "Server error" in result
+
+
 # ---------------------------------------------------------------------------
 # Events Tool Handler Tests
 # ---------------------------------------------------------------------------
@@ -1237,6 +1317,116 @@ def test_format_fitness_summary_empty():
     """Test fitness summary formatter with empty list."""
     result = format_fitness_summary([], fmt_json=False)
     assert "No fitness tracking records found" in result
+
+
+def test_compute_fitness_metrics_full():
+    """Test _compute_fitness_metrics extracts latest values."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    entries = [
+        {"id": "2026-08-21", "ctl": 50.0, "atl": 60.0, "rampRate": 2.0},
+        {"id": "2026-08-22", "ctl": 52.0, "atl": 58.0},
+    ]
+    result = _compute_fitness_metrics(entries)
+    assert result["ctl"] == 52.0
+    assert result["atl"] == 58.0
+    assert result["tsb"] == -6.0
+    assert result["ramp_rate"] == 2.0
+    assert result["date"] == "2026-08-22"
+
+
+def test_compute_fitness_metrics_computes_tsb_and_ramp():
+    """Test _compute_fitness_metrics computes TSB and ramp rate when absent."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    entries = [
+        {"id": "2026-08-21", "ctl": 50.0, "atl": 60.0},
+        {"id": "2026-08-22", "ctl": 52.0, "atl": 58.0},
+    ]
+    result = _compute_fitness_metrics(entries)
+    assert result["tsb"] == -6.0
+    assert result["ramp_rate"] == 2.0
+
+
+def test_compute_fitness_metrics_empty():
+    """Test _compute_fitness_metrics handles empty input."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    result = _compute_fitness_metrics([])
+    assert result["ctl"] is None
+    assert result["atl"] is None
+    assert result["tsb"] is None
+    assert result["date"] is None
+
+
+def test_format_readiness_dashboard_markdown():
+    """Test readiness dashboard markdown formatter."""
+    wellness = [
+        {
+            "id": "2026-08-29",
+            "restingHR": 48,
+            "hrv": 65.5,
+            "sleepSecs": 28800,
+            "sleepQuality": 2,
+            "readiness": 85.5,
+            "soreness": 2,
+            "fatigue": 2,
+            "stress": 2,
+            "ctl": 52.0,
+            "atl": 58.0,
+            "rampRate": 1.5,
+        }
+    ]
+    sport = [
+        {
+            "types": ["Ride"],
+            "ftp": 300,
+            "indoor_ftp": 295,
+            "lthr": 170,
+            "max_hr": 190,
+            "power_zones": [150, 200, 240, 280, 320, 380],
+        }
+    ]
+    result = format_readiness_dashboard(wellness, sport, fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "2026-08-29" in result
+    assert "65.5" in result
+    assert "8.0 h" in result
+    assert "300" in result
+    assert "Neutral / Productive Training" in result
+    assert "Coaching Recommendation" in result
+
+
+def test_format_readiness_dashboard_json():
+    """Test readiness dashboard JSON formatter."""
+    import json
+
+    wellness = [
+        {"id": "2026-08-29", "ctl": 52.0, "atl": 58.0, "readiness": 85.5}
+    ]
+    sport = [{"types": ["Ride"], "ftp": 300}]
+    result = format_readiness_dashboard(wellness, sport, fmt_json=True)
+    data = json.loads(result)
+    assert data["fitness"]["ctl"] == 52.0
+    assert data["fitness"]["tsb"] == -6.0
+    assert data["cycling_parameters"]["ftp_watts"] == 300
+    assert "recommendation" in data
+
+
+def test_format_readiness_dashboard_empty_wellness():
+    """Test readiness dashboard formatter handles empty wellness data."""
+    sport = [{"types": ["Ride"], "ftp": 300}]
+    result = format_readiness_dashboard([], sport, fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "N/A" in result
+
+
+def test_format_readiness_dashboard_empty_sport_settings():
+    """Test readiness dashboard formatter handles missing sport settings."""
+    wellness = [{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    result = format_readiness_dashboard(wellness, [], fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "Not configured" in result
 
 
 def test_format_events_list_markdown():
