@@ -5,8 +5,6 @@ from typing import Any, cast
 
 from coach_mcp.models import ResponseFormat
 
-from coach_mcp.models import ResponseFormat
-
 
 def to_json_str(data: Any) -> str:
     """Format Python object as indented JSON string."""
