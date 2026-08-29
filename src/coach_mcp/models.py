@@ -168,6 +168,24 @@ class GetPowerCurveInput(BaseToolModel):
     )
 
 
+class GetPowerModelInput(BaseToolModel):
+    """Input parameters for retrieving athlete critical power model."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    sport_type: str = Field(
+        default="Ride",
+        description="Sport type for the power model (e.g., 'Ride', 'Run').",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+
 class CreateActivityInput(BaseToolModel):
     """Input parameters for manually recording an activity."""
 

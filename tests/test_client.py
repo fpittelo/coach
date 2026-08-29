@@ -211,6 +211,85 @@ async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
 
 
 @pytest.mark.asyncio
+async def test_get_power_model_success(client: IntervalsClient):
+    """Test successful athlete power model retrieval."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/mmp-model?type=Ride").respond(
+            200,
+            json={
+                "cp": 300,
+                "wPrime": 20000,
+                "pMax": 1200,
+                "model": "Morton",
+                "ftp": 300,
+            },
+        )
+
+        data = await client.get_power_model()
+        assert data["cp"] == 300
+        assert data["wPrime"] == 20000
+        assert data["pMax"] == 1200
+        assert data["model"] == "Morton"
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_with_sport_type(client: IntervalsClient):
+    """Test athlete power model retrieval with explicit sport type."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/mmp-model?type=Run").respond(
+            200,
+            json={"cp": 320, "wPrime": 15000, "pMax": 1000},
+        )
+
+        data = await client.get_power_model(sport_type="Run")
+        assert data["cp"] == 320
+        assert data["wPrime"] == 15000
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_with_athlete_id(client: IntervalsClient):
+    """Test athlete power model retrieval with explicit athlete_id."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/i123/mmp-model?type=Ride").respond(
+            200,
+            json={"cp": 310, "wPrime": 22000, "pMax": 1150},
+        )
+
+        data = await client.get_power_model(athlete_id="i123")
+        assert data["cp"] == 310
+        assert data["wPrime"] == 22000
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_model_is_cached():
+    """Power model should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/mmp-model?type=Ride").respond(
+            200,
+            json={"cp": 300, "wPrime": 20000, "pMax": 1200},
+        )
+
+        first = await client.get_power_model()
+        second = await client.get_power_model()
+
+        assert first["cp"] == 300
+        assert second["cp"] == 300
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_get_activity_power_curve_success(client: IntervalsClient):
     """Test successful activity power curve retrieval."""
     with respx.mock(base_url=BASE_URL) as respx_mock:
@@ -816,12 +895,8 @@ async def test_dynamic_endpoints_are_not_cached():
             json=[{"id": "act1", "name": "Endurance Ride"}],
         )
 
-        first = await client.list_activities(
-            oldest="2026-08-01", newest="2026-08-22", limit=10
-        )
-        second = await client.list_activities(
-            oldest="2026-08-01", newest="2026-08-22", limit=10
-        )
+        first = await client.list_activities(oldest="2026-08-01", newest="2026-08-22", limit=10)
+        second = await client.list_activities(oldest="2026-08-01", newest="2026-08-22", limit=10)
 
         assert first[0]["name"] == "Endurance Ride"
         assert second[0]["name"] == "Endurance Ride"

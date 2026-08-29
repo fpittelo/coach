@@ -272,6 +272,22 @@ class IntervalsClient:
         params = {"type": sport_type}
         return await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
 
+    async def get_power_model(
+        self,
+        athlete_id: str | None = None,
+        sport_type: str = "Ride",
+    ) -> dict[str, Any]:
+        """Retrieve athlete critical power (CP), W', and Pmax model."""
+        target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"power_model:{target_id}:{sport_type}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        params = {"type": sport_type}
+        result = await self._request("GET", f"athlete/{target_id}/mmp-model", params=params)
+        await self._cache.set(cache_key, result)
+        return result
+
     async def get_activity_power_curve(
         self,
         activity_id: str,

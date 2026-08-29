@@ -457,3 +457,56 @@ def format_power_curve(
         lines.append(f"| {duration} | {watts} | {wkg} | {sport} |")
 
     return "\n".join(lines)
+
+
+def format_power_model(data: dict[str, Any], fmt_json: bool = False) -> str:
+    """Format critical power (CP), W', and Pmax model as markdown or JSON."""
+    if fmt_json:
+        return to_json_str(data)
+
+    if not data:
+        return "# Critical Power Model\n\nNo power model data available."
+
+    sport_type = data.get("sport_type", data.get("type", "Ride"))
+    lines = [f"# Critical Power Model ({sport_type})", ""]
+
+    # Critical Power (CP) - check multiple possible field names
+    cp = data.get("cp", data.get("ftp"))
+    if cp is None:
+        cp = data.get("critical_power")
+    if cp is not None:
+        lines.append(f"- **Critical Power (CP)**: {cp} W")
+
+    # Anaerobic Work Capacity (W')
+    w_prime = data.get("wPrime", data.get("w_prime", data.get("wprime")))
+    if w_prime is None:
+        w_prime = data.get("anaerobic_work_capacity")
+    if w_prime is not None:
+        # Display in kJ if value is large (Joules), otherwise assume kJ
+        if isinstance(w_prime, (int, float)) and w_prime >= 1000:
+            w_prime_kj = w_prime / 1000
+            lines.append(f"- **Anaerobic Work Capacity ($W'$)**: {w_prime} J ({w_prime_kj:.1f} kJ)")
+        else:
+            lines.append(f"- **Anaerobic Work Capacity ($W'$)**: {w_prime} kJ")
+
+    # Peak Neuromuscular Power (Pmax)
+    p_max = data.get("pMax", data.get("p_max", data.get("pmax")))
+    if p_max is None:
+        p_max = data.get("peak_power")
+    if p_max is not None:
+        lines.append(f"- **Peak Neuromuscular Power ($P_{{max}}$)**: {p_max} W")
+
+    # Model Type / Name
+    model_type = data.get("model", data.get("name", data.get("fit_type", data.get("type"))))
+    if model_type is not None and model_type != sport_type:
+        lines.append(f"- **Model Type**: {model_type}")
+
+    # Estimated/Model FTP if available and distinct from CP
+    ftp = data.get("ftp")
+    if ftp is not None and ftp != cp:
+        lines.append(f"- **Estimated FTP**: {ftp} W")
+
+    if len(lines) == 2:
+        lines.append("No model parameters found in response.")
+
+    return "\n".join(lines)

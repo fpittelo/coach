@@ -19,6 +19,7 @@ from coach_mcp.formatters import (
     format_fitness_summary,
     format_folders,
     format_power_curve,
+    format_power_model,
     format_profile,
     format_sport_settings,
     format_wellness_list,
@@ -37,6 +38,7 @@ from coach_mcp.models import (
     GetEventInput,
     GetFitnessSummaryInput,
     GetPowerCurveInput,
+    GetPowerModelInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -275,6 +277,23 @@ async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) ->
 
 
 @mcp.tool(
+    name="intervals_get_power_model",
+    annotations=ToolAnnotations(
+        title="Get Athlete Power Model (CP/W')",
+        read_only_hint=True,
+    ),
+)
+async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) -> str:
+    """Retrieve athlete critical power (CP), anaerobic work capacity (W'), and Pmax model."""
+    client = _get_client_from_ctx(ctx)
+    try:
+        data = await client.get_power_model(params.athlete_id, params.sport_type)
+        return format_power_model(data, fmt_json=(params.response_format == ResponseFormat.JSON))
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching power model: {exc}")
+
+
+@mcp.tool(
     name="intervals_create_activity",
     annotations=ToolAnnotations(
         title="Create Manual Activity",
@@ -506,9 +525,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
             f"Error formatting event '{params.event_id}': unexpected data type in response ({exc})"
         )
     except Exception as exc:  # noqa: BLE001
-        return redact_sensitive(
-            f"Error formatting event '{params.event_id}': {exc}"
-        )
+        return redact_sensitive(f"Error formatting event '{params.event_id}': {exc}")
 
 
 @mcp.tool(
