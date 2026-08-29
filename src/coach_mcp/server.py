@@ -96,6 +96,37 @@ def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
     return IntervalsClient()
 
 
+def _format_event_workout_doc(event: dict[str, Any]) -> str:
+    """Safely format the workout_doc / description payload as a string.
+
+    Intervals.icu may return ``workout_doc`` as either a DSL string or a
+    compiled JSON dict. ``description`` may also contain the DSL text. This
+    helper coerces both representations into a safe string suitable for
+    markdown output.
+    """
+    workout_doc = event.get("workout_doc")
+    description = event.get("description")
+
+    # Prefer a string workout_doc when available
+    if isinstance(workout_doc, str) and workout_doc.strip():
+        return workout_doc
+
+    # Fall back to description if it contains DSL text
+    if isinstance(description, str) and description.strip():
+        return description
+
+    # If workout_doc is a dict, pretty-print it as JSON
+    if isinstance(workout_doc, dict):
+        return to_json_str(workout_doc)
+
+    # If description is a dict, pretty-print it as JSON
+    if isinstance(description, dict):
+        return to_json_str(description)
+
+    # No usable content
+    return "No structured definition available."
+
+
 # ---------------------------------------------------------------------------
 # Athlete Tools
 # ---------------------------------------------------------------------------
@@ -454,7 +485,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
             return to_json_str(event)
         name = event.get("name", "Untitled")
         date_str = event.get("start_date_local", "N/A")
-        doc = event.get("workout_doc", "No structured definition")
+        doc = _format_event_workout_doc(event)
         lines = [
             f"# Scheduled Workout: {name} (ID: {params.event_id})",
             f"- **Date**: {date_str}",
@@ -470,6 +501,14 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         return "\n".join(lines)
     except IntervalsAPIError as exc:
         return redact_sensitive(f"Error fetching event '{params.event_id}': {exc}")
+    except TypeError as exc:
+        return redact_sensitive(
+            f"Error formatting event '{params.event_id}': unexpected data type in response ({exc})"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(
+            f"Error formatting event '{params.event_id}': {exc}"
+        )
 
 
 @mcp.tool(

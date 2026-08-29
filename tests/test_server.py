@@ -681,6 +681,57 @@ async def test_intervals_get_event_markdown(mock_ctx, mock_client):
 
     assert "Scheduled Workout" in result
     assert "Threshold 3x10" in result
+    assert "- 10m warmup" in result
+    mock_client.get_event.assert_awaited_once_with("evt123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_event_workout_doc_dict(mock_ctx, mock_client):
+    """Test get event tool handles dict workout_doc payload without TypeError."""
+    mock_client.get_event = AsyncMock(
+        return_value={
+            "id": "evt123",
+            "name": "Threshold 3x10",
+            "type": "Ride",
+            "category": "WORKOUT",
+            "start_date_local": "2026-08-22T08:00:00",
+            "workout_doc": {"steps": [{"duration": 600, "power": 0.95}]},
+        }
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetEventInput(event_id="evt123", response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_event(params, mock_ctx)
+
+    assert "Scheduled Workout" in result
+    assert "Threshold 3x10" in result
+    assert "steps" in result
+    assert "600" in result
+    mock_client.get_event.assert_awaited_once_with("evt123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_event_workout_doc_dict_with_description(mock_ctx, mock_client):
+    """Test get event tool falls back to description DSL when workout_doc is a dict."""
+    mock_client.get_event = AsyncMock(
+        return_value={
+            "id": "evt123",
+            "name": "Threshold 3x10",
+            "type": "Ride",
+            "category": "WORKOUT",
+            "start_date_local": "2026-08-22T08:00:00",
+            "description": "- 10m warmup\n- 3x 10m 95%",
+            "workout_doc": {"steps": [{"duration": 600, "power": 0.95}]},
+        }
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetEventInput(event_id="evt123", response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_event(params, mock_ctx)
+
+    assert "Scheduled Workout" in result
+    assert "- 10m warmup" in result
+    assert "- 3x 10m 95%" in result
     mock_client.get_event.assert_awaited_once_with("evt123")
 
 
