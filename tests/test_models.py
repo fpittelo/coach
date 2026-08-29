@@ -1,5 +1,8 @@
 """Comprehensive tests for Pydantic v2 input validation models."""
 
+from datetime import date
+from unittest.mock import patch
+
 import pytest
 from pydantic import ValidationError
 
@@ -129,6 +132,42 @@ def test_list_activities_input_extra_forbid():
             newest="2026-08-22",
             extra_field="disallowed",  # type: ignore
         )
+
+
+@patch("coach_mcp.models.date")
+def test_list_activities_input_default_dates(mock_date):
+    """Test ListActivitiesInput computes default 30-day window."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListActivitiesInput()
+    assert model.oldest == "2026-07-30"
+    assert model.newest == "2026-08-29"
+    assert model.limit == 50
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_list_activities_input_partial_override_oldest(mock_date):
+    """Test ListActivitiesInput overrides oldest while defaulting newest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListActivitiesInput(oldest="2026-07-01")
+    assert model.oldest == "2026-07-01"
+    assert model.newest == "2026-08-29"
+
+
+@patch("coach_mcp.models.date")
+def test_list_activities_input_partial_override_newest(mock_date):
+    """Test ListActivitiesInput overrides newest while defaulting oldest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListActivitiesInput(newest="2026-08-15")
+    assert model.oldest == "2026-07-30"
+    assert model.newest == "2026-08-15"
+
+
+def test_list_activities_input_explicit_override():
+    """Test ListActivitiesInput accepts explicit date range."""
+    model = ListActivitiesInput(oldest="2026-07-01", newest="2026-08-15")
+    assert model.oldest == "2026-07-01"
+    assert model.newest == "2026-08-15"
 
 
 def test_get_activity_input_valid():
@@ -495,6 +534,42 @@ def test_get_wellness_input_extra_forbid():
         GetWellnessInput(oldest="2026-08-01", newest="2026-08-22", extra=True)  # type: ignore
 
 
+@patch("coach_mcp.models.date")
+def test_get_wellness_input_default_dates(mock_date):
+    """Test GetWellnessInput computes default 7-day window."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetWellnessInput()
+    assert model.oldest == "2026-08-22"
+    assert model.newest == "2026-08-29"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_get_wellness_input_partial_override_oldest(mock_date):
+    """Test GetWellnessInput overrides oldest while defaulting newest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetWellnessInput(oldest="2026-08-01")
+    assert model.oldest == "2026-08-01"
+    assert model.newest == "2026-08-29"
+
+
+@patch("coach_mcp.models.date")
+def test_get_wellness_input_partial_override_newest(mock_date):
+    """Test GetWellnessInput overrides newest while defaulting oldest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetWellnessInput(newest="2026-08-15")
+    assert model.oldest == "2026-08-22"
+    assert model.newest == "2026-08-15"
+
+
+def test_get_wellness_input_explicit_override():
+    """Test GetWellnessInput accepts explicit date range."""
+    model = GetWellnessInput(oldest="2026-08-01", newest="2026-08-15")
+    assert model.oldest == "2026-08-01"
+    assert model.newest == "2026-08-15"
+
+
 def test_record_wellness_input_valid():
     """Test RecordWellnessInput with all valid fields."""
     model = RecordWellnessInput(
@@ -633,6 +708,42 @@ def test_get_fitness_summary_input_extra_forbid():
         GetFitnessSummaryInput(oldest="2026-08-01", newest="2026-08-22", extra=True)  # type: ignore
 
 
+@patch("coach_mcp.models.date")
+def test_get_fitness_summary_input_default_dates(mock_date):
+    """Test GetFitnessSummaryInput computes default 42-day window."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetFitnessSummaryInput()
+    assert model.oldest == "2026-07-18"
+    assert model.newest == "2026-08-29"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_get_fitness_summary_input_partial_override_oldest(mock_date):
+    """Test GetFitnessSummaryInput overrides oldest while defaulting newest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetFitnessSummaryInput(oldest="2026-07-01")
+    assert model.oldest == "2026-07-01"
+    assert model.newest == "2026-08-29"
+
+
+@patch("coach_mcp.models.date")
+def test_get_fitness_summary_input_partial_override_newest(mock_date):
+    """Test GetFitnessSummaryInput overrides newest while defaulting oldest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = GetFitnessSummaryInput(newest="2026-08-15")
+    assert model.oldest == "2026-07-18"
+    assert model.newest == "2026-08-15"
+
+
+def test_get_fitness_summary_input_explicit_override():
+    """Test GetFitnessSummaryInput accepts explicit date range."""
+    model = GetFitnessSummaryInput(oldest="2026-07-01", newest="2026-08-15")
+    assert model.oldest == "2026-07-01"
+    assert model.newest == "2026-08-15"
+
+
 # ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
 # ---------------------------------------------------------------------------
@@ -672,6 +783,43 @@ def test_list_events_input_extra_forbid():
     """Test ListEventsInput rejects extra fields."""
     with pytest.raises(ValidationError):
         ListEventsInput(oldest="2026-08-01", newest="2026-08-22", extra=True)  # type: ignore
+
+
+@patch("coach_mcp.models.date")
+def test_list_events_input_default_dates(mock_date):
+    """Test ListEventsInput computes default 30-day forward window."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListEventsInput()
+    assert model.oldest == "2026-08-29"
+    assert model.newest == "2026-09-28"
+    assert model.athlete_id is None
+    assert model.category is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_list_events_input_partial_override_oldest(mock_date):
+    """Test ListEventsInput overrides oldest while defaulting newest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListEventsInput(oldest="2026-08-01")
+    assert model.oldest == "2026-08-01"
+    assert model.newest == "2026-09-28"
+
+
+@patch("coach_mcp.models.date")
+def test_list_events_input_partial_override_newest(mock_date):
+    """Test ListEventsInput overrides newest while defaulting oldest."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    model = ListEventsInput(newest="2026-09-15")
+    assert model.oldest == "2026-08-29"
+    assert model.newest == "2026-09-15"
+
+
+def test_list_events_input_explicit_override():
+    """Test ListEventsInput accepts explicit date range."""
+    model = ListEventsInput(oldest="2026-08-01", newest="2026-09-15")
+    assert model.oldest == "2026-08-01"
+    assert model.newest == "2026-09-15"
 
 
 def test_get_event_input_defaults():

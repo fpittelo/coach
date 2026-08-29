@@ -1,6 +1,7 @@
 """Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
-from unittest.mock import AsyncMock, MagicMock
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.server.mcpserver import Context, MCPServer
@@ -320,6 +321,34 @@ async def test_intervals_list_activities_json(mock_ctx, mock_client):
 
 
 @pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_list_activities_default_dates(mock_date, mock_ctx, mock_client):
+    """Test list activities tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.list_activities = AsyncMock(
+        return_value=[
+            {
+                "id": "act1",
+                "name": "Endurance Ride",
+                "type": "Ride",
+                "start_date_local": "2026-08-22T09:00:00",
+                "moving_time": 7200,
+                "icu_training_load": 110,
+            }
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = ListActivitiesInput()
+    result = await intervals_list_activities(params, mock_ctx)
+
+    assert "Endurance Ride" in result
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-07-30", newest="2026-08-29", athlete_id=None, limit=50
+    )
+
+
+@pytest.mark.asyncio
 async def test_intervals_get_activity_markdown(mock_ctx, mock_client):
     """Test get activity tool returns markdown."""
     mock_client.get_activity = AsyncMock(
@@ -619,6 +648,25 @@ async def test_intervals_get_wellness_json(mock_ctx, mock_client):
 
 
 @pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_get_wellness_default_dates(mock_date, mock_ctx, mock_client):
+    """Test get wellness tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "restingHR": 48, "readiness": 85.5}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetWellnessInput()
+    result = await intervals_get_wellness(params, mock_ctx)
+
+    assert "48" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-08-22", newest="2026-08-29", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
 async def test_intervals_record_wellness(mock_ctx, mock_client):
     """Test record wellness tool."""
     mock_client.record_wellness = AsyncMock(return_value={"id": "2026-08-22"})
@@ -670,6 +718,25 @@ async def test_intervals_get_fitness_summary_json(mock_ctx, mock_client):
     assert '"ctl": 52.0' in result
 
 
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_get_fitness_summary_default_dates(mock_date, mock_ctx, mock_client):
+    """Test fitness summary tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetFitnessSummaryInput()
+    result = await intervals_get_fitness_summary(params, mock_ctx)
+
+    assert "52.0" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-07-18", newest="2026-08-29", athlete_id=None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Events Tool Handler Tests
 # ---------------------------------------------------------------------------
@@ -718,6 +785,33 @@ async def test_intervals_list_events_json(mock_ctx, mock_client):
     result = await intervals_list_events(params, mock_ctx)
 
     assert '"id": "evt1"' in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_list_events_default_dates(mock_date, mock_ctx, mock_client):
+    """Test list events tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {
+                "id": "evt1",
+                "name": "VO2max Intervals",
+                "category": "WORKOUT",
+                "type": "Ride",
+                "start_date_local": "2026-08-22T08:00:00",
+            }
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = ListEventsInput()
+    result = await intervals_list_events(params, mock_ctx)
+
+    assert "VO2max Intervals" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-08-29", newest="2026-09-28", athlete_id=None, category=None
+    )
 
 
 @pytest.mark.asyncio
