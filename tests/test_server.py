@@ -1,6 +1,7 @@
 """Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
-from unittest.mock import AsyncMock, MagicMock
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.server.mcpserver import Context, MCPServer
@@ -15,7 +16,9 @@ from coach_mcp.formatters import (
     format_fitness_summary,
     format_folders,
     format_power_curve,
+    format_power_model,
     format_profile,
+    format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
     format_workouts,
@@ -33,6 +36,8 @@ from coach_mcp.models import (
     GetEventInput,
     GetFitnessSummaryInput,
     GetPowerCurveInput,
+    GetPowerModelInput,
+    GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -57,6 +62,8 @@ from coach_mcp.server import (
     intervals_get_event,
     intervals_get_fitness_summary,
     intervals_get_power_curve,
+    intervals_get_power_model,
+    intervals_get_readiness_dashboard,
     intervals_get_sport_settings,
     intervals_get_wellness,
     intervals_list_activities,
@@ -114,12 +121,14 @@ def test_tools_registered():
         "intervals_get_activity_streams",
         "intervals_get_activity_intervals",
         "intervals_get_power_curve",
+        "intervals_get_power_model",
         "intervals_create_activity",
         "intervals_update_activity",
         "intervals_delete_activity",
         "intervals_get_wellness",
         "intervals_record_wellness",
         "intervals_get_fitness_summary",
+        "intervals_get_readiness_dashboard",
         "intervals_list_events",
         "intervals_get_event",
         "intervals_create_event",
@@ -316,6 +325,34 @@ async def test_intervals_list_activities_json(mock_ctx, mock_client):
 
 
 @pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_list_activities_default_dates(mock_date, mock_ctx, mock_client):
+    """Test list activities tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.list_activities = AsyncMock(
+        return_value=[
+            {
+                "id": "act1",
+                "name": "Endurance Ride",
+                "type": "Ride",
+                "start_date_local": "2026-08-22T09:00:00",
+                "moving_time": 7200,
+                "icu_training_load": 110,
+            }
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = ListActivitiesInput()
+    result = await intervals_list_activities(params, mock_ctx)
+
+    assert "Endurance Ride" in result
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-07-30", newest="2026-08-29", athlete_id=None, limit=50
+    )
+
+
+@pytest.mark.asyncio
 async def test_intervals_get_activity_markdown(mock_ctx, mock_client):
     """Test get activity tool returns markdown."""
     mock_client.get_activity = AsyncMock(
@@ -431,9 +468,7 @@ async def test_intervals_get_power_curve_athlete_json(mock_ctx, mock_client):
 @pytest.mark.asyncio
 async def test_intervals_get_power_curve_activity_markdown(mock_ctx, mock_client):
     """Test get power curve tool returns markdown for activity curve."""
-    mock_client.get_activity_power_curve = AsyncMock(
-        return_value={"5": 900, "60": 320, "300": 290}
-    )
+    mock_client.get_activity_power_curve = AsyncMock(return_value={"5": 900, "60": 320, "300": 290})
     mock_ctx.request_context.lifespan_state["client"] = mock_client
 
     params = GetPowerCurveInput(activity_id="i123", response_format=ResponseFormat.MARKDOWN)
@@ -471,6 +506,63 @@ async def test_intervals_get_power_curve_error(mock_ctx, mock_client):
     result = await intervals_get_power_curve(params, mock_ctx)
 
     assert "Error fetching power curve" in result
+    assert "Not found" in result
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_model_markdown(mock_ctx, mock_client):
+    """Test get power model tool returns markdown."""
+    mock_client.get_power_model = AsyncMock(
+        return_value={
+            "cp": 300,
+            "wPrime": 20000,
+            "pMax": 1200,
+            "model": "Morton",
+            "ftp": 300,
+        }
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerModelInput(
+        athlete_id="i456", sport_type="Ride", response_format=ResponseFormat.MARKDOWN
+    )
+    result = await intervals_get_power_model(params, mock_ctx)
+
+    assert "Critical Power Model" in result
+    assert "300" in result
+    assert "20000" in result
+    assert "1200" in result
+    assert "Morton" in result
+    mock_client.get_power_model.assert_awaited_once_with("i456", "Ride")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_model_json(mock_ctx, mock_client):
+    """Test get power model tool returns JSON."""
+    mock_client.get_power_model = AsyncMock(return_value={"cp": 300, "wPrime": 20000, "pMax": 1200})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerModelInput(response_format=ResponseFormat.JSON)
+    result = await intervals_get_power_model(params, mock_ctx)
+
+    assert '"cp": 300' in result
+    assert '"wPrime": 20000' in result
+    assert '"pMax": 1200' in result
+    mock_client.get_power_model.assert_awaited_once_with(None, "Ride")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_power_model_error(mock_ctx, mock_client):
+    """Test get power model tool handles API errors gracefully."""
+    mock_client.get_power_model = AsyncMock(
+        side_effect=IntervalsNotFoundError("Not found", status_code=404)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetPowerModelInput(athlete_id="i999")
+    result = await intervals_get_power_model(params, mock_ctx)
+
+    assert "Error fetching power model" in result
     assert "Not found" in result
 
 
@@ -560,6 +652,25 @@ async def test_intervals_get_wellness_json(mock_ctx, mock_client):
 
 
 @pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_get_wellness_default_dates(mock_date, mock_ctx, mock_client):
+    """Test get wellness tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "restingHR": 48, "readiness": 85.5}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetWellnessInput()
+    result = await intervals_get_wellness(params, mock_ctx)
+
+    assert "48" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-08-22", newest="2026-08-29", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
 async def test_intervals_record_wellness(mock_ctx, mock_client):
     """Test record wellness tool."""
     mock_client.record_wellness = AsyncMock(return_value={"id": "2026-08-22"})
@@ -609,6 +720,101 @@ async def test_intervals_get_fitness_summary_json(mock_ctx, mock_client):
     result = await intervals_get_fitness_summary(params, mock_ctx)
 
     assert '"ctl": 52.0' in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_get_fitness_summary_default_dates(mock_date, mock_ctx, mock_client):
+    """Test fitness summary tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetFitnessSummaryInput()
+    result = await intervals_get_fitness_summary(params, mock_ctx)
+
+    assert "52.0" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-07-18", newest="2026-08-29", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_markdown(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool returns markdown."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_client.get_sport_settings = AsyncMock(
+        return_value=[{"types": ["Ride"], "ftp": 300}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput(days=7, response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Daily Readiness & Training Dashboard" in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-08-23", newest="2026-08-29", athlete_id=None
+    )
+    mock_client.get_sport_settings.assert_awaited_once_with(athlete_id=None)
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_json(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool returns JSON."""
+    import json
+
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    )
+    mock_client.get_sport_settings = AsyncMock(return_value=[{"ftp": 300}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput(response_format=ResponseFormat.JSON)
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    data = json.loads(result)
+    assert data["fitness"]["ctl"] == 52.0
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_empty(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool handles empty wellness data."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_client.get_sport_settings = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Daily Readiness & Training Dashboard" in result
+    assert "N/A" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_api_error(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard tool handles API errors gracefully."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("Server error", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Error fetching readiness dashboard" in result
+    assert "Server error" in result
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +868,33 @@ async def test_intervals_list_events_json(mock_ctx, mock_client):
 
 
 @pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_intervals_list_events_default_dates(mock_date, mock_ctx, mock_client):
+    """Test list events tool accepts empty input and uses default dates."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {
+                "id": "evt1",
+                "name": "VO2max Intervals",
+                "category": "WORKOUT",
+                "type": "Ride",
+                "start_date_local": "2026-08-22T08:00:00",
+            }
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = ListEventsInput()
+    result = await intervals_list_events(params, mock_ctx)
+
+    assert "VO2max Intervals" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-08-29", newest="2026-09-28", athlete_id=None, category=None
+    )
+
+
+@pytest.mark.asyncio
 async def test_intervals_get_event_markdown(mock_ctx, mock_client):
     """Test get event tool returns markdown."""
     mock_client.get_event = AsyncMock(
@@ -681,6 +914,57 @@ async def test_intervals_get_event_markdown(mock_ctx, mock_client):
 
     assert "Scheduled Workout" in result
     assert "Threshold 3x10" in result
+    assert "- 10m warmup" in result
+    mock_client.get_event.assert_awaited_once_with("evt123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_event_workout_doc_dict(mock_ctx, mock_client):
+    """Test get event tool handles dict workout_doc payload without TypeError."""
+    mock_client.get_event = AsyncMock(
+        return_value={
+            "id": "evt123",
+            "name": "Threshold 3x10",
+            "type": "Ride",
+            "category": "WORKOUT",
+            "start_date_local": "2026-08-22T08:00:00",
+            "workout_doc": {"steps": [{"duration": 600, "power": 0.95}]},
+        }
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetEventInput(event_id="evt123", response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_event(params, mock_ctx)
+
+    assert "Scheduled Workout" in result
+    assert "Threshold 3x10" in result
+    assert "steps" in result
+    assert "600" in result
+    mock_client.get_event.assert_awaited_once_with("evt123")
+
+
+@pytest.mark.asyncio
+async def test_intervals_get_event_workout_doc_dict_with_description(mock_ctx, mock_client):
+    """Test get event tool falls back to description DSL when workout_doc is a dict."""
+    mock_client.get_event = AsyncMock(
+        return_value={
+            "id": "evt123",
+            "name": "Threshold 3x10",
+            "type": "Ride",
+            "category": "WORKOUT",
+            "start_date_local": "2026-08-22T08:00:00",
+            "description": "- 10m warmup\n- 3x 10m 95%",
+            "workout_doc": {"steps": [{"duration": 600, "power": 0.95}]},
+        }
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetEventInput(event_id="evt123", response_format=ResponseFormat.MARKDOWN)
+    result = await intervals_get_event(params, mock_ctx)
+
+    assert "Scheduled Workout" in result
+    assert "- 10m warmup" in result
+    assert "- 3x 10m 95%" in result
     mock_client.get_event.assert_awaited_once_with("evt123")
 
 
@@ -1035,6 +1319,116 @@ def test_format_fitness_summary_empty():
     assert "No fitness tracking records found" in result
 
 
+def test_compute_fitness_metrics_full():
+    """Test _compute_fitness_metrics extracts latest values."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    entries = [
+        {"id": "2026-08-21", "ctl": 50.0, "atl": 60.0, "rampRate": 2.0},
+        {"id": "2026-08-22", "ctl": 52.0, "atl": 58.0},
+    ]
+    result = _compute_fitness_metrics(entries)
+    assert result["ctl"] == 52.0
+    assert result["atl"] == 58.0
+    assert result["tsb"] == -6.0
+    assert result["ramp_rate"] == 2.0
+    assert result["date"] == "2026-08-22"
+
+
+def test_compute_fitness_metrics_computes_tsb_and_ramp():
+    """Test _compute_fitness_metrics computes TSB and ramp rate when absent."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    entries = [
+        {"id": "2026-08-21", "ctl": 50.0, "atl": 60.0},
+        {"id": "2026-08-22", "ctl": 52.0, "atl": 58.0},
+    ]
+    result = _compute_fitness_metrics(entries)
+    assert result["tsb"] == -6.0
+    assert result["ramp_rate"] == 2.0
+
+
+def test_compute_fitness_metrics_empty():
+    """Test _compute_fitness_metrics handles empty input."""
+    from coach_mcp.formatters import _compute_fitness_metrics
+
+    result = _compute_fitness_metrics([])
+    assert result["ctl"] is None
+    assert result["atl"] is None
+    assert result["tsb"] is None
+    assert result["date"] is None
+
+
+def test_format_readiness_dashboard_markdown():
+    """Test readiness dashboard markdown formatter."""
+    wellness = [
+        {
+            "id": "2026-08-29",
+            "restingHR": 48,
+            "hrv": 65.5,
+            "sleepSecs": 28800,
+            "sleepQuality": 2,
+            "readiness": 85.5,
+            "soreness": 2,
+            "fatigue": 2,
+            "stress": 2,
+            "ctl": 52.0,
+            "atl": 58.0,
+            "rampRate": 1.5,
+        }
+    ]
+    sport = [
+        {
+            "types": ["Ride"],
+            "ftp": 300,
+            "indoor_ftp": 295,
+            "lthr": 170,
+            "max_hr": 190,
+            "power_zones": [150, 200, 240, 280, 320, 380],
+        }
+    ]
+    result = format_readiness_dashboard(wellness, sport, fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "2026-08-29" in result
+    assert "65.5" in result
+    assert "8.0 h" in result
+    assert "300" in result
+    assert "Neutral / Productive Training" in result
+    assert "Coaching Recommendation" in result
+
+
+def test_format_readiness_dashboard_json():
+    """Test readiness dashboard JSON formatter."""
+    import json
+
+    wellness = [
+        {"id": "2026-08-29", "ctl": 52.0, "atl": 58.0, "readiness": 85.5}
+    ]
+    sport = [{"types": ["Ride"], "ftp": 300}]
+    result = format_readiness_dashboard(wellness, sport, fmt_json=True)
+    data = json.loads(result)
+    assert data["fitness"]["ctl"] == 52.0
+    assert data["fitness"]["tsb"] == -6.0
+    assert data["cycling_parameters"]["ftp_watts"] == 300
+    assert "recommendation" in data
+
+
+def test_format_readiness_dashboard_empty_wellness():
+    """Test readiness dashboard formatter handles empty wellness data."""
+    sport = [{"types": ["Ride"], "ftp": 300}]
+    result = format_readiness_dashboard([], sport, fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "N/A" in result
+
+
+def test_format_readiness_dashboard_empty_sport_settings():
+    """Test readiness dashboard formatter handles missing sport settings."""
+    wellness = [{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+    result = format_readiness_dashboard(wellness, [], fmt_json=False)
+    assert "# Daily Readiness & Training Dashboard" in result
+    assert "Not configured" in result
+
+
 def test_format_events_list_markdown():
     """Test events list markdown formatter."""
     events = [
@@ -1127,3 +1521,51 @@ def test_format_power_curve_empty():
     result = format_power_curve({}, response_format=ResponseFormat.MARKDOWN)
     assert "Power Curve" in result
     assert "No power curve data" in result
+
+
+def test_format_power_model_markdown():
+    """Test power model markdown formatter."""
+    data = {
+        "cp": 300,
+        "wPrime": 20000,
+        "pMax": 1200,
+        "model": "Morton",
+        "ftp": 300,
+    }
+    result = format_power_model(data, fmt_json=False)
+    assert "Critical Power Model" in result
+    assert "300" in result
+    assert "20000" in result
+    assert "1200" in result
+    assert "Morton" in result
+
+
+def test_format_power_model_json():
+    """Test power model JSON formatter."""
+    data = {"cp": 300, "wPrime": 20000, "pMax": 1200}
+    result = format_power_model(data, fmt_json=True)
+    assert '"cp": 300' in result
+    assert '"wPrime": 20000' in result
+    assert '"pMax": 1200' in result
+
+
+def test_format_power_model_empty():
+    """Test power model formatter with empty data."""
+    result = format_power_model({}, fmt_json=False)
+    assert "Critical Power Model" in result
+    assert "No power model data" in result
+
+
+def test_format_power_model_alternative_keys():
+    """Test power model formatter handles alternative field names."""
+    data = {
+        "ftp": 310,
+        "w_prime": 21000,
+        "p_max": 1250,
+        "name": "CP Model",
+    }
+    result = format_power_model(data, fmt_json=False)
+    assert "310" in result
+    assert "21000" in result
+    assert "1250" in result
+    assert "CP Model" in result

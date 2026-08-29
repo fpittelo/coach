@@ -4,6 +4,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from typing import Any, Literal, cast
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -19,7 +20,9 @@ from coach_mcp.formatters import (
     format_fitness_summary,
     format_folders,
     format_power_curve,
+    format_power_model,
     format_profile,
+    format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
     format_workouts,
@@ -37,6 +40,8 @@ from coach_mcp.models import (
     GetEventInput,
     GetFitnessSummaryInput,
     GetPowerCurveInput,
+    GetPowerModelInput,
+    GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -94,6 +99,37 @@ def _get_client_from_ctx(ctx: Context) -> IntervalsClient:
     except (AttributeError, KeyError, RuntimeError) as exc:
         logger.debug("Failed to retrieve client from context lifespan: %s", exc)
     return IntervalsClient()
+
+
+def _format_event_workout_doc(event: dict[str, Any]) -> str:
+    """Safely format the workout_doc / description payload as a string.
+
+    Intervals.icu may return ``workout_doc`` as either a DSL string or a
+    compiled JSON dict. ``description`` may also contain the DSL text. This
+    helper coerces both representations into a safe string suitable for
+    markdown output.
+    """
+    workout_doc = event.get("workout_doc")
+    description = event.get("description")
+
+    # Prefer a string workout_doc when available
+    if isinstance(workout_doc, str) and workout_doc.strip():
+        return workout_doc
+
+    # Fall back to description if it contains DSL text
+    if isinstance(description, str) and description.strip():
+        return description
+
+    # If workout_doc is a dict, pretty-print it as JSON
+    if isinstance(workout_doc, dict):
+        return to_json_str(workout_doc)
+
+    # If description is a dict, pretty-print it as JSON
+    if isinstance(description, dict):
+        return to_json_str(description)
+
+    # No usable content
+    return "No structured definition available."
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +277,23 @@ async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) ->
         return format_power_curve(data, response_format=params.response_format)
     except IntervalsAPIError as exc:
         return redact_sensitive(f"Error fetching power curve: {exc}")
+
+
+@mcp.tool(
+    name="intervals_get_power_model",
+    annotations=ToolAnnotations(
+        title="Get Athlete Power Model (CP/W')",
+        read_only_hint=True,
+    ),
+)
+async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) -> str:
+    """Retrieve athlete critical power (CP), anaerobic work capacity (W'), and Pmax model."""
+    client = _get_client_from_ctx(ctx)
+    try:
+        data = await client.get_power_model(params.athlete_id, params.sport_type)
+        return format_power_model(data, fmt_json=(params.response_format == ResponseFormat.JSON))
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching power model: {exc}")
 
 
 @mcp.tool(
@@ -411,6 +464,38 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
         return redact_sensitive(f"Error calculating fitness summary: {exc}")
 
 
+@mcp.tool(
+    name="intervals_get_readiness_dashboard",
+    annotations=ToolAnnotations(
+        title="Get Daily Readiness & Training Dashboard",
+        read_only_hint=True,
+    ),
+)
+async def intervals_get_readiness_dashboard(
+    params: GetReadinessDashboardInput, ctx: Context
+) -> str:
+    """Fetch wellness and sport settings and synthesize a single readiness dashboard."""
+    client = _get_client_from_ctx(ctx)
+    try:
+        oldest = (date.today() - timedelta(days=params.days - 1)).isoformat()
+        newest = date.today().isoformat()
+        wellness_data = await client.get_wellness(
+            oldest=oldest,
+            newest=newest,
+            athlete_id=params.athlete_id,
+        )
+        sport_settings = await client.get_sport_settings(athlete_id=params.athlete_id)
+        return format_readiness_dashboard(
+            wellness_data,
+            sport_settings,
+            fmt_json=(params.response_format == ResponseFormat.JSON),
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching readiness dashboard: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching readiness dashboard: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Planned Workouts & Events Tools
 # ---------------------------------------------------------------------------
@@ -454,7 +539,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
             return to_json_str(event)
         name = event.get("name", "Untitled")
         date_str = event.get("start_date_local", "N/A")
-        doc = event.get("workout_doc", "No structured definition")
+        doc = _format_event_workout_doc(event)
         lines = [
             f"# Scheduled Workout: {name} (ID: {params.event_id})",
             f"- **Date**: {date_str}",
@@ -470,6 +555,12 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         return "\n".join(lines)
     except IntervalsAPIError as exc:
         return redact_sensitive(f"Error fetching event '{params.event_id}': {exc}")
+    except TypeError as exc:
+        return redact_sensitive(
+            f"Error formatting event '{params.event_id}': unexpected data type in response ({exc})"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error formatting event '{params.event_id}': {exc}")
 
 
 @mcp.tool(
