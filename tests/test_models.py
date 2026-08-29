@@ -19,6 +19,7 @@ from coach_mcp.models import (
     GetFitnessSummaryInput,
     GetPowerCurveInput,
     GetPowerModelInput,
+    GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -742,6 +743,54 @@ def test_get_fitness_summary_input_explicit_override():
     model = GetFitnessSummaryInput(oldest="2026-07-01", newest="2026-08-15")
     assert model.oldest == "2026-07-01"
     assert model.newest == "2026-08-15"
+
+
+def test_get_readiness_dashboard_input_defaults():
+    """Test GetReadinessDashboardInput defaults."""
+    model = GetReadinessDashboardInput()
+    assert model.athlete_id is None
+    assert model.days == 7
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_get_readiness_dashboard_input_valid():
+    """Test GetReadinessDashboardInput with explicit values."""
+    model = GetReadinessDashboardInput(
+        athlete_id="i12345", days=14, response_format=ResponseFormat.JSON
+    )
+    assert model.athlete_id == "i12345"
+    assert model.days == 14
+    assert model.response_format == ResponseFormat.JSON
+
+
+def test_get_readiness_dashboard_input_days_bounds():
+    """Test GetReadinessDashboardInput days range bounds."""
+    with pytest.raises(ValidationError):
+        GetReadinessDashboardInput(days=0)
+
+    with pytest.raises(ValidationError):
+        GetReadinessDashboardInput(days=31)
+
+    valid_min = GetReadinessDashboardInput(days=1)
+    assert valid_min.days == 1
+
+    valid_max = GetReadinessDashboardInput(days=30)
+    assert valid_max.days == 30
+
+
+def test_get_readiness_dashboard_input_athlete_id_validation():
+    """Test GetReadinessDashboardInput athlete_id regex validation."""
+    valid = GetReadinessDashboardInput(athlete_id="0")
+    assert valid.athlete_id == "0"
+
+    with pytest.raises(ValidationError):
+        GetReadinessDashboardInput(athlete_id="invalid")
+
+
+def test_get_readiness_dashboard_input_extra_forbid():
+    """Test GetReadinessDashboardInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        GetReadinessDashboardInput(extra=True)  # type: ignore
 
 
 # ---------------------------------------------------------------------------

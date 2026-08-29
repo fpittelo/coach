@@ -375,6 +375,26 @@ class GetFitnessSummaryInput(BaseToolModel):
         return self
 
 
+class GetReadinessDashboardInput(BaseToolModel):
+    """Input parameters for composite daily readiness dashboard."""
+
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    days: int = Field(
+        default=7,
+        ge=1,
+        le=30,
+        description="Number of days of wellness/fitness history to analyze (default: 7).",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from typing import Any, Literal, cast
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -21,6 +22,7 @@ from coach_mcp.formatters import (
     format_power_curve,
     format_power_model,
     format_profile,
+    format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
     format_workouts,
@@ -39,6 +41,7 @@ from coach_mcp.models import (
     GetFitnessSummaryInput,
     GetPowerCurveInput,
     GetPowerModelInput,
+    GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
     ListActivitiesInput,
@@ -459,6 +462,38 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
         )
     except IntervalsAPIError as exc:
         return redact_sensitive(f"Error calculating fitness summary: {exc}")
+
+
+@mcp.tool(
+    name="intervals_get_readiness_dashboard",
+    annotations=ToolAnnotations(
+        title="Get Daily Readiness & Training Dashboard",
+        read_only_hint=True,
+    ),
+)
+async def intervals_get_readiness_dashboard(
+    params: GetReadinessDashboardInput, ctx: Context
+) -> str:
+    """Fetch wellness and sport settings and synthesize a single readiness dashboard."""
+    client = _get_client_from_ctx(ctx)
+    try:
+        oldest = (date.today() - timedelta(days=params.days - 1)).isoformat()
+        newest = date.today().isoformat()
+        wellness_data = await client.get_wellness(
+            oldest=oldest,
+            newest=newest,
+            athlete_id=params.athlete_id,
+        )
+        sport_settings = await client.get_sport_settings(athlete_id=params.athlete_id)
+        return format_readiness_dashboard(
+            wellness_data,
+            sport_settings,
+            fmt_json=(params.response_format == ResponseFormat.JSON),
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching readiness dashboard: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching readiness dashboard: {exc}")
 
 
 # ---------------------------------------------------------------------------
