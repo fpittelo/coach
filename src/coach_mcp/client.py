@@ -269,7 +269,7 @@ class IntervalsClient:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Retrieve athlete mean-maximal power (MMP) curve for a sport type."""
         target_id = self._resolve_athlete(athlete_id)
-        params = {"curves": sport_type}
+        params = {"type": sport_type}
         return await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
 
     async def get_activity_power_curve(
