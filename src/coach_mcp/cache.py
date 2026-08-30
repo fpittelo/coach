@@ -49,3 +49,10 @@ class TTLCache:
         """Remove a single cached entry if it exists."""
         async with self._lock:
             self._store.pop(key, None)
+
+    async def invalidate_prefix(self, prefix: str) -> None:
+        """Remove all cached entries whose keys start with ``prefix``."""
+        async with self._lock:
+            for key in list(self._store):
+                if key.startswith(prefix):
+                    self._store.pop(key, None)

@@ -61,7 +61,7 @@ graph TD
    - Inspect detected work/recovery intervals (`intervals_get_activity_intervals`).
    - Record manual activities and update subjective metrics (RPE, feel) (`intervals_create_activity`, `intervals_update_activity`).
 3. **Recovery, Wellness & Fitness Metrics (Banister Model)**:
-   - Track daily HRV (rMSSD), resting heart rate, sleep duration & quality (`intervals_get_wellness`, `intervals_record_wellness`).
+   - Track daily HRV (rMSSD), resting heart rate, sleep duration & quality (`intervals_get_wellness`, `intervals_record_wellness`, `intervals_record_wellness_bulk`).
    - Calculate Chronic Training Load (**CTL** / Fitness), Acute Training Load (**ATL** / Fatigue), and Training Stress Balance (**TSB** / Form) (`intervals_get_fitness_summary`).
 4. **Workout Planning & Structured Workout Creation**:
    - Query scheduled workouts on the athlete calendar (`intervals_list_events`).
@@ -93,6 +93,8 @@ Create a `.env` file or supply environment variables:
 | `MCP_PORT` | Port for HTTP / SSE transport | `8000` |
 | `HTTP_TIMEOUT_SECONDS`| API request timeout in seconds | `30.0` |
 | `HTTP_MAX_RETRIES` | Max retries with exponential backoff on 429/5xx | `3` |
+| `CACHE_TTL_SECONDS` | Default TTL in seconds for semi-static cached responses | `300` |
+| `CACHE_TTL_VOLATILE_SECONDS` | TTL in seconds for volatile cached responses (activities, wellness, events, etc.) | `60` |
 
 ---
 
