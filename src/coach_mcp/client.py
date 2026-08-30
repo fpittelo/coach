@@ -401,6 +401,21 @@ class IntervalsClient:
         await self._volatile_cache.invalidate_prefix(f"wellness:{target_id}:")
         return result
 
+    async def record_wellness_bulk(
+        self,
+        records: list[dict[str, Any]],
+        athlete_id: str | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Record or update wellness for multiple days via PUT /athlete/{id}/wellness-bulk."""
+        target_id = self._resolve_athlete(athlete_id)
+        payload = [
+            {"id": r["date"], **{k: v for k, v in r.items() if k != "date" and v is not None}}
+            for r in records
+        ]
+        result = await self._request("PUT", f"athlete/{target_id}/wellness-bulk", json_data=payload)
+        await self._volatile_cache.invalidate_prefix(f"wellness:{target_id}:")
+        return cast(dict[str, Any] | list[dict[str, Any]], result)
+
     # ---------------------------------------------------------------------------
     # Planned Workouts & Events API Methods
     # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@
 
 ## 1. System Overview & Architecture
 
-**Coach MCP** is a production-grade [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server written in Python 3.11+. It exposes 19 tools that let an LLM (Claude, OpenCode, Cursor, etc.) read and write endurance-sports data through the [Intervals.icu](https://intervals.icu) REST API.
+**Coach MCP** is a production-grade [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server written in Python 3.11+. It exposes 20 tools that let an LLM (Claude, OpenCode, Cursor, etc.) read and write endurance-sports data through the [Intervals.icu](https://intervals.icu) REST API.
 
 ```mermaid
 graph TD
@@ -396,7 +396,7 @@ URL: http://localhost:8000/mcp
 
 ## 6. Complete Tool Catalog
 
-Coach exposes **19 tools** grouped into six categories. All read tools support `response_format: markdown | json`.
+Coach exposes **20 tools** grouped into six categories. All read tools support `response_format: markdown | json`.
 
 ### 6.1 Athlete Profiling
 
@@ -423,6 +423,7 @@ Coach exposes **19 tools** grouped into six categories. All read tools support `
 | :--- | :--- | :--- | :--- |
 | `intervals_get_wellness` | Daily resting HR, HRV, sleep, readiness, fatigue, soreness. | `{"oldest": "2026-08-01", "newest": "2026-08-22"}` | Wellness table. |
 | `intervals_record_wellness` | Record or update daily wellness metrics. | `{"date": "2026-08-22", "restingHR": 48, "readiness": 85.5}` | Success confirmation. |
+| `intervals_record_wellness_bulk` | Record or update wellness for multiple days in one call. | `{"records": [{"date": "2026-08-22", "restingHR": 48}, {"date": "2026-08-23", "readiness": 85.5}]}` | Success confirmation. |
 
 ### 6.4 Fitness / Banister model
 

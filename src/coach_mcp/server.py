@@ -49,6 +49,7 @@ from coach_mcp.models import (
     ListEventsInput,
     ListFoldersInput,
     ListWorkoutsInput,
+    RecordWellnessBulkInput,
     RecordWellnessInput,
     ResponseFormat,
     UpdateActivityInput,
@@ -444,6 +445,53 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
         return f"Successfully recorded wellness for {params.date}: {to_json_str(res)}"
     except IntervalsAPIError as exc:
         return redact_sensitive(f"Error recording wellness: {exc}") or ""
+
+
+@mcp.tool(
+    name="intervals_record_wellness_bulk",
+    annotations=ToolAnnotations(
+        title="Record Bulk Daily Wellness & Recovery",
+        read_only_hint=False,
+        idempotent_hint=False,
+    ),
+)
+async def intervals_record_wellness_bulk(params: RecordWellnessBulkInput, ctx: Context) -> str:
+    """Record daily wellness metrics for multiple days in a single API call.
+
+    Days managed by connected sync providers (Oura/Garmin/Polar) may be
+    reverted on the next re-sync.
+    """
+    client = _get_client_from_ctx(ctx)
+    records_payload: list[dict[str, Any]] = []
+    for r in params.records:
+        item: dict[str, Any] = {"date": r.date}
+        for key in (
+            "restingHR",
+            "hrv",
+            "weight",
+            "sleepSecs",
+            "sleepQuality",
+            "readiness",
+            "soreness",
+            "fatigue",
+            "stress",
+            "mood",
+            "injury",
+            "comments",
+        ):
+            val = getattr(r, key)
+            if val is not None:
+                item[key] = val
+        records_payload.append(item)
+
+    try:
+        res = await client.record_wellness_bulk(records_payload, athlete_id=params.athlete_id)
+        return (
+            f"Successfully recorded bulk wellness for {len(params.records)} day(s): "
+            f"{to_json_str(res)}"
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error recording bulk wellness: {exc}") or ""
 
 
 @mcp.tool(

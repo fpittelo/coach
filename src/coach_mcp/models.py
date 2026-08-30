@@ -343,6 +343,87 @@ class RecordWellnessInput(BaseToolModel):
     )
 
 
+class WellnessRecordItem(BaseToolModel):
+    """Single daily wellness record for bulk upload."""
+
+    date: str = Field(
+        ...,
+        description="Date in ISO format YYYY-MM-DD.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    restingHR: int | None = Field(
+        default=None, description="Resting heart rate in bpm (30-150).", ge=30, le=150
+    )
+    hrv: float | None = Field(
+        default=None, description="Heart rate variability (rMSSD in ms >= 0.0).", ge=0.0
+    )
+    weight: float | None = Field(
+        default=None, description="Weight in kilograms (30.0-250.0).", ge=30.0, le=250.0
+    )
+    sleepSecs: int | None = Field(
+        default=None, description="Sleep duration in seconds (>= 0).", ge=0
+    )
+    sleepQuality: int | None = Field(
+        default=None,
+        description="Sleep quality rating (1: Poor, 2: Average, 3: Good, 4: Excellent).",
+        ge=1,
+        le=4,
+    )
+    readiness: float | None = Field(
+        default=None, description="Readiness score (0.0-100.0).", ge=0.0, le=100.0
+    )
+    soreness: int | None = Field(
+        default=None,
+        description="Muscle soreness (1: None, 2: Low, 3: Medium, 4: High).",
+        ge=1,
+        le=4,
+    )
+    fatigue: int | None = Field(
+        default=None,
+        description="Fatigue level (1: None, 2: Low, 3: Medium, 4: High).",
+        ge=1,
+        le=4,
+    )
+    stress: int | None = Field(
+        default=None,
+        description="Stress level (1: Low, 2: Normal, 3: High, 4: Very High).",
+        ge=1,
+        le=4,
+    )
+    mood: int | None = Field(
+        default=None,
+        description="Mood rating (1: Poor, 2: Ok, 3: Good, 4: Great).",
+        ge=1,
+        le=4,
+    )
+    injury: int | None = Field(
+        default=None,
+        description="Injury status (1: None, 2: Niggle, 3: Injured, 4: Severe).",
+        ge=1,
+        le=4,
+    )
+    comments: str | None = Field(default=None, description="Subjective wellness notes or comments.")
+
+
+class RecordWellnessBulkInput(BaseToolModel):
+    """Input parameters for recording multiple daily wellness records at once."""
+
+    records: list[WellnessRecordItem] = Field(
+        ...,
+        description="List of daily wellness records to upload (1-100 items).",
+        min_length=1,
+        max_length=100,
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for authenticated athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN, description="Output format ('markdown' or 'json')."
+    )
+
+
 class GetFitnessSummaryInput(BaseToolModel):
     """Input parameters for calculating CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
 
