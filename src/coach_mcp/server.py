@@ -1,5 +1,6 @@
 """Coach MCP Server: MCPServer implementation for Intervals.icu endurance coaching."""
 
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator
@@ -483,12 +484,10 @@ async def intervals_get_readiness_dashboard(
     try:
         oldest = (date.today() - timedelta(days=params.days - 1)).isoformat()
         newest = date.today().isoformat()
-        wellness_data = await client.get_wellness(
-            oldest=oldest,
-            newest=newest,
-            athlete_id=params.athlete_id,
+        wellness_data, sport_settings = await asyncio.gather(
+            client.get_wellness(oldest=oldest, newest=newest, athlete_id=params.athlete_id),
+            client.get_sport_settings(athlete_id=params.athlete_id),
         )
-        sport_settings = await client.get_sport_settings(athlete_id=params.athlete_id)
         return format_readiness_dashboard(
             wellness_data,
             sport_settings,
