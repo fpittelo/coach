@@ -89,6 +89,7 @@ def test_redact_sensitive_multiple_secrets():
         "with Authorization: Bearer token.abc and email user@example.com"
     )
     result = redact_sensitive(text)
+    assert result is not None
     assert "secret123" not in result
     assert "token.abc" not in result
     assert "user@example.com" not in result

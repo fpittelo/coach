@@ -10,10 +10,10 @@ from coach_mcp.config import Settings
 def mock_settings() -> Settings:
     """Fixture providing test configuration."""
     return Settings(
-        INTERVALS_API_KEY="test_secret_key",
-        INTERVALS_ATHLETE_ID="0",
-        INTERVALS_BASE_URL="https://intervals.icu/api/v1",
-        HTTP_MAX_RETRIES=2,
+        intervals_api_key="test_secret_key",
+        intervals_athlete_id="0",
+        intervals_base_url="https://intervals.icu/api/v1",
+        http_max_retries=2,
     )
 
 

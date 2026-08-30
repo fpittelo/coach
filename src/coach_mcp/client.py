@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -32,7 +32,8 @@ class IntervalsAPIError(Exception):
     def __str__(self) -> str:
         """Return a sanitized string representation with secrets redacted."""
         message = redact_sensitive(str(self.args[0])) if self.args else "IntervalsAPIError"
-        parts = [message]
+        message = message or "IntervalsAPIError"
+        parts: list[str] = [message]
         if self.status_code is not None:
             parts.append(f"status_code={self.status_code}")
         if self.response_text:
@@ -211,10 +212,10 @@ class IntervalsClient:
         cache_key = f"profile:{target_id}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cast(dict[str, Any], cached)
         result = await self._request("GET", f"athlete/{target_id}")
         await self._cache.set(cache_key, result)
-        return result
+        return cast(dict[str, Any], result)
 
     async def get_sport_settings(self, athlete_id: str | None = None) -> list[dict[str, Any]]:
         """Fetch athlete sport settings (power, HR, pace zones)."""
@@ -222,10 +223,10 @@ class IntervalsClient:
         cache_key = f"sport_settings:{target_id}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cast(list[dict[str, Any]], cached)
         result = await self._request("GET", f"athlete/{target_id}/sport-settings")
         await self._cache.set(cache_key, result)
-        return result
+        return cast(list[dict[str, Any]], result)
 
     # ---------------------------------------------------------------------------
     # Activities API Methods
@@ -241,11 +242,14 @@ class IntervalsClient:
         """List activities between oldest and newest dates (YYYY-MM-DD)."""
         target_id = self._resolve_athlete(athlete_id)
         params = {"oldest": oldest, "newest": newest, "limit": limit}
-        return await self._request("GET", f"athlete/{target_id}/activities", params=params)
+        return cast(
+            list[dict[str, Any]],
+            await self._request("GET", f"athlete/{target_id}/activities", params=params),
+        )
 
     async def get_activity(self, activity_id: str) -> dict[str, Any]:
         """Retrieve full details of an activity."""
-        return await self._request("GET", f"activity/{activity_id}")
+        return cast(dict[str, Any], await self._request("GET", f"activity/{activity_id}"))
 
     async def get_activity_streams(
         self,
@@ -256,11 +260,14 @@ class IntervalsClient:
         params = {}
         if types:
             params["types"] = ",".join(types)
-        return await self._request("GET", f"activity/{activity_id}/streams", params=params)
+        return cast(
+            list[dict[str, Any]],
+            await self._request("GET", f"activity/{activity_id}/streams", params=params),
+        )
 
     async def get_activity_intervals(self, activity_id: str) -> dict[str, Any]:
         """Retrieve detected intervals for an activity."""
-        return await self._request("GET", f"activity/{activity_id}/intervals")
+        return cast(dict[str, Any], await self._request("GET", f"activity/{activity_id}/intervals"))
 
     async def get_power_curve(
         self,
@@ -270,7 +277,10 @@ class IntervalsClient:
         """Retrieve athlete mean-maximal power (MMP) curve for a sport type."""
         target_id = self._resolve_athlete(athlete_id)
         params = {"type": sport_type}
-        return await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
+        return cast(
+            dict[str, Any] | list[dict[str, Any]],
+            await self._request("GET", f"athlete/{target_id}/power-curves", params=params),
+        )
 
     async def get_power_model(
         self,
@@ -282,18 +292,21 @@ class IntervalsClient:
         cache_key = f"power_model:{target_id}:{sport_type}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cast(dict[str, Any], cached)
         params = {"type": sport_type}
         result = await self._request("GET", f"athlete/{target_id}/mmp-model", params=params)
         await self._cache.set(cache_key, result)
-        return result
+        return cast(dict[str, Any], result)
 
     async def get_activity_power_curve(
         self,
         activity_id: str,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Retrieve mean-maximal power (MMP) curve for a specific activity."""
-        return await self._request("GET", f"activity/{activity_id}/power-curve")
+        return cast(
+            dict[str, Any] | list[dict[str, Any]],
+            await self._request("GET", f"activity/{activity_id}/power-curve"),
+        )
 
     async def create_activity(
         self,
@@ -308,7 +321,8 @@ class IntervalsClient:
         activity files (FIT/TCX/GPX) as multipart/form-data.
         """
         activity_payload = {**payload, "category": payload.get("category", "PAST_ACTIVITY")}
-        return await self.create_event(activity_payload, athlete_id=athlete_id)
+        result = await self.create_event(activity_payload, athlete_id=athlete_id)
+        return result
 
     async def update_activity(
         self,
@@ -316,11 +330,14 @@ class IntervalsClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """Update activity fields (name, perceived exertion, feel, notes)."""
-        return await self._request("PUT", f"activity/{activity_id}", json_data=payload)
+        return cast(
+            dict[str, Any],
+            await self._request("PUT", f"activity/{activity_id}", json_data=payload),
+        )
 
     async def delete_activity(self, activity_id: str) -> dict[str, Any]:
         """Delete an activity."""
-        return await self._request("DELETE", f"activity/{activity_id}")
+        return cast(dict[str, Any], await self._request("DELETE", f"activity/{activity_id}"))
 
     # ---------------------------------------------------------------------------
     # Wellness & Metrics API Methods
@@ -335,7 +352,10 @@ class IntervalsClient:
         """Retrieve wellness history over a date range."""
         target_id = self._resolve_athlete(athlete_id)
         params = {"oldest": oldest, "newest": newest}
-        return await self._request("GET", f"athlete/{target_id}/wellness", params=params)
+        return cast(
+            list[dict[str, Any]],
+            await self._request("GET", f"athlete/{target_id}/wellness", params=params),
+        )
 
     async def record_wellness(
         self,
@@ -345,8 +365,11 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Record or update wellness for a specific day."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request(
-            "PUT", f"athlete/{target_id}/wellness/{date_str}", json_data=payload
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "PUT", f"athlete/{target_id}/wellness/{date_str}", json_data=payload
+            ),
         )
 
     # ---------------------------------------------------------------------------
@@ -365,12 +388,17 @@ class IntervalsClient:
         params: dict[str, Any] = {"oldest": oldest, "newest": newest}
         if category:
             params["category"] = category
-        return await self._request("GET", f"athlete/{target_id}/events", params=params)
+        return cast(
+            list[dict[str, Any]],
+            await self._request("GET", f"athlete/{target_id}/events", params=params),
+        )
 
     async def get_event(self, event_id: str, athlete_id: str | None = None) -> dict[str, Any]:
         """Retrieve a specific calendar event."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("GET", f"athlete/{target_id}/events/{event_id}")
+        return cast(
+            dict[str, Any], await self._request("GET", f"athlete/{target_id}/events/{event_id}")
+        )
 
     async def create_event(
         self,
@@ -379,7 +407,10 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Create a planned workout or calendar event."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("POST", f"athlete/{target_id}/events", json_data=payload)
+        return cast(
+            dict[str, Any],
+            await self._request("POST", f"athlete/{target_id}/events", json_data=payload),
+        )
 
     async def update_event(
         self,
@@ -389,14 +420,17 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Update an existing calendar event or planned workout."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request(
-            "PUT", f"athlete/{target_id}/events/{event_id}", json_data=payload
+        return cast(
+            dict[str, Any],
+            await self._request("PUT", f"athlete/{target_id}/events/{event_id}", json_data=payload),
         )
 
     async def delete_event(self, event_id: str, athlete_id: str | None = None) -> dict[str, Any]:
         """Delete a calendar event."""
         target_id = self._resolve_athlete(athlete_id)
-        return await self._request("DELETE", f"athlete/{target_id}/events/{event_id}")
+        return cast(
+            dict[str, Any], await self._request("DELETE", f"athlete/{target_id}/events/{event_id}")
+        )
 
     # ---------------------------------------------------------------------------
     # Workout Library & Folders API Methods
@@ -408,10 +442,10 @@ class IntervalsClient:
         cache_key = f"folders:{target_id}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cast(list[dict[str, Any]], cached)
         result = await self._request("GET", f"athlete/{target_id}/folders")
         await self._cache.set(cache_key, result)
-        return result
+        return cast(list[dict[str, Any]], result)
 
     async def list_workouts(
         self,
@@ -423,4 +457,7 @@ class IntervalsClient:
         params = {}
         if folder_id:
             params["folderId"] = folder_id
-        return await self._request("GET", f"athlete/{target_id}/workouts", params=params)
+        return cast(
+            list[dict[str, Any]],
+            await self._request("GET", f"athlete/{target_id}/workouts", params=params),
+        )
