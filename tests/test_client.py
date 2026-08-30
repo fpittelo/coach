@@ -432,6 +432,67 @@ async def test_record_wellness_success(client: IntervalsClient):
 
 
 @pytest.mark.asyncio
+async def test_record_wellness_bulk_success(client: IntervalsClient):
+    """Test successful bulk wellness recording via wellness-bulk endpoint."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.put("/athlete/0/wellness-bulk").respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}, {"id": "2026-08-23", "restingHR": 49}],
+        )
+
+        records = [
+            {"date": "2026-08-22", "restingHR": 48},
+            {"date": "2026-08-23", "restingHR": 49, "readiness": 85.5},
+        ]
+        res = await client.record_wellness_bulk(records)
+        assert isinstance(res, list)
+        assert len(res) == 2
+        assert res[0]["id"] == "2026-08-22"
+        sent = json.loads(route.calls.last.request.content)
+        assert sent == [
+            {"id": "2026-08-22", "restingHR": 48},
+            {"id": "2026-08-23", "restingHR": 49, "readiness": 85.5},
+        ]
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_record_wellness_bulk_invalidates_wellness_cache():
+    """Recording bulk wellness should invalidate the wellness cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22"
+        ).respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}],
+        )
+        put_route = respx_mock.put("/athlete/0/wellness-bulk").respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 50}],
+        )
+
+        first = await client.get_wellness("2026-08-01", "2026-08-22")
+        await client.record_wellness_bulk(
+            [{"date": "2026-08-22", "restingHR": 50}, {"date": "2026-08-23", "restingHR": 51}]
+        )
+        second = await client.get_wellness("2026-08-01", "2026-08-22")
+
+        assert first[0]["restingHR"] == 48
+        assert second[0]["restingHR"] == 48
+        assert get_route.call_count == 2
+        assert put_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_list_events_success(client: IntervalsClient):
     """Test successful events listing."""
     with respx.mock(base_url=BASE_URL) as respx_mock:

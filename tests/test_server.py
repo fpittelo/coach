@@ -48,10 +48,12 @@ from coach_mcp.models import (
     ListEventsInput,
     ListFoldersInput,
     ListWorkoutsInput,
+    RecordWellnessBulkInput,
     RecordWellnessInput,
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    WellnessRecordItem,
 )
 from coach_mcp.server import (
     _get_client_from_ctx,
@@ -75,6 +77,7 @@ from coach_mcp.server import (
     intervals_list_folders,
     intervals_list_workouts,
     intervals_record_wellness,
+    intervals_record_wellness_bulk,
     intervals_update_activity,
     intervals_update_event,
     mcp,
@@ -131,6 +134,7 @@ def test_tools_registered():
         "intervals_delete_activity",
         "intervals_get_wellness",
         "intervals_record_wellness",
+        "intervals_record_wellness_bulk",
         "intervals_get_fitness_summary",
         "intervals_get_readiness_dashboard",
         "intervals_list_events",
@@ -687,6 +691,55 @@ async def test_intervals_record_wellness(mock_ctx, mock_client):
     mock_client.record_wellness.assert_awaited_once_with(
         "2026-08-22", {"restingHR": 48, "readiness": 85.5}, athlete_id=None
     )
+
+
+@pytest.mark.asyncio
+async def test_intervals_record_wellness_bulk(mock_ctx, mock_client):
+    """Test record bulk wellness tool."""
+    mock_client.record_wellness_bulk = AsyncMock(
+        return_value=[{"id": "2026-08-22"}, {"id": "2026-08-23"}]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = RecordWellnessBulkInput(
+        records=[
+            WellnessRecordItem(date="2026-08-22", restingHR=48),
+            WellnessRecordItem(date="2026-08-23", readiness=85.5),
+        ]
+    )
+    result = await intervals_record_wellness_bulk(params, mock_ctx)
+
+    assert "Successfully recorded bulk wellness" in result
+    assert "2 day(s)" in result
+    mock_client.record_wellness_bulk.assert_awaited_once_with(
+        [
+            {"date": "2026-08-22", "restingHR": 48},
+            {"date": "2026-08-23", "readiness": 85.5},
+        ],
+        athlete_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_intervals_record_wellness_bulk_error(mock_ctx, mock_client):
+    """Test record bulk wellness tool handles API errors gracefully."""
+    mock_client.record_wellness_bulk = AsyncMock(
+        side_effect=IntervalsAPIError("Server error", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = RecordWellnessBulkInput(records=[WellnessRecordItem(date="2026-08-22", restingHR=48)])
+    result = await intervals_record_wellness_bulk(params, mock_ctx)
+
+    assert "Error recording bulk wellness" in result
+    assert "Server error" in result
+
+
+def test_intervals_record_wellness_bulk_docstring_caveat():
+    """Test bulk wellness tool docstring contains sync-provider caveat."""
+    docstring = intervals_record_wellness_bulk.__doc__ or ""
+    assert "re-sync" in docstring
+    assert "Oura" in docstring
 
 
 @pytest.mark.asyncio

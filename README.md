@@ -61,7 +61,7 @@ graph TD
    - Inspect detected work/recovery intervals (`intervals_get_activity_intervals`).
    - Record manual activities and update subjective metrics (RPE, feel) (`intervals_create_activity`, `intervals_update_activity`).
 3. **Recovery, Wellness & Fitness Metrics (Banister Model)**:
-   - Track daily HRV (rMSSD), resting heart rate, sleep duration & quality (`intervals_get_wellness`, `intervals_record_wellness`).
+   - Track daily HRV (rMSSD), resting heart rate, sleep duration & quality (`intervals_get_wellness`, `intervals_record_wellness`, `intervals_record_wellness_bulk`).
    - Calculate Chronic Training Load (**CTL** / Fitness), Acute Training Load (**ATL** / Fatigue), and Training Stress Balance (**TSB** / Form) (`intervals_get_fitness_summary`).
 4. **Workout Planning & Structured Workout Creation**:
    - Query scheduled workouts on the athlete calendar (`intervals_list_events`).
