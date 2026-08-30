@@ -177,6 +177,7 @@ async def test_get_power_curve_success(client: IntervalsClient):
         )
 
         data = await client.get_power_curve()
+        assert isinstance(data, dict)
         assert data["Ride"]["5"] == 850
         assert data["Ride"]["60"] == 300
         await client.close()
@@ -192,6 +193,7 @@ async def test_get_power_curve_with_sport_type(client: IntervalsClient):
         )
 
         data = await client.get_power_curve(sport_type="Run")
+        assert isinstance(data, dict)
         assert data["Run"]["60"] == 320
         await client.close()
 
@@ -206,6 +208,7 @@ async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
         )
 
         data = await client.get_power_curve(athlete_id="i123")
+        assert isinstance(data, dict)
         assert data["Ride"]["60"] == 310
         await client.close()
 
@@ -303,6 +306,7 @@ async def test_get_activity_power_curve_success(client: IntervalsClient):
         )
 
         data = await client.get_activity_power_curve("i123")
+        assert isinstance(data, dict)
         assert data["5"] == 900
         assert data["60"] == 320
         await client.close()
@@ -425,6 +429,67 @@ async def test_record_wellness_success(client: IntervalsClient):
         assert res["id"] == "2026-08-22"
         assert json.loads(route.calls.last.request.content) == payload
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_record_wellness_bulk_success(client: IntervalsClient):
+    """Test successful bulk wellness recording via wellness-bulk endpoint."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.put("/athlete/0/wellness-bulk").respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}, {"id": "2026-08-23", "restingHR": 49}],
+        )
+
+        records = [
+            {"date": "2026-08-22", "restingHR": 48},
+            {"date": "2026-08-23", "restingHR": 49, "readiness": 85.5},
+        ]
+        res = await client.record_wellness_bulk(records)
+        assert isinstance(res, list)
+        assert len(res) == 2
+        assert res[0]["id"] == "2026-08-22"
+        sent = json.loads(route.calls.last.request.content)
+        assert sent == [
+            {"id": "2026-08-22", "restingHR": 48},
+            {"id": "2026-08-23", "restingHR": 49, "readiness": 85.5},
+        ]
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_record_wellness_bulk_invalidates_wellness_cache():
+    """Recording bulk wellness should invalidate the wellness cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22"
+        ).respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}],
+        )
+        put_route = respx_mock.put("/athlete/0/wellness-bulk").respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 50}],
+        )
+
+        first = await client.get_wellness("2026-08-01", "2026-08-22")
+        await client.record_wellness_bulk(
+            [{"date": "2026-08-22", "restingHR": 50}, {"date": "2026-08-23", "restingHR": 51}]
+        )
+        second = await client.get_wellness("2026-08-01", "2026-08-22")
+
+        assert first[0]["restingHR"] == 48
+        assert second[0]["restingHR"] == 48
+        assert get_route.call_count == 2
+        assert put_route.call_count == 1
+
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -878,14 +943,14 @@ async def test_folders_are_cached():
 
 
 @pytest.mark.asyncio
-async def test_dynamic_endpoints_are_not_cached():
-    """Dynamic endpoints like activities should always hit the API."""
+async def test_list_activities_are_cached():
+    """List activities should be cached and not trigger duplicate HTTP calls."""
     client = IntervalsClient(
         api_key="test_key",
         athlete_id="0",
         base_url=BASE_URL,
         max_retries=1,
-        cache_ttl=300,
+        cache_ttl_volatile=300,
     )
     with respx.mock(base_url=BASE_URL) as respx_mock:
         route = respx_mock.get(
@@ -900,6 +965,360 @@ async def test_dynamic_endpoints_are_not_cached():
 
         assert first[0]["name"] == "Endurance Ride"
         assert second[0]["name"] == "Endurance Ride"
-        assert route.call_count == 2
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_is_cached():
+    """Activity details should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/activity/i123").respond(
+            200,
+            json={"id": "i123", "name": "Threshold Intervals"},
+        )
+
+        first = await client.get_activity("i123")
+        second = await client.get_activity("i123")
+
+        assert first["name"] == "Threshold Intervals"
+        assert second["name"] == "Threshold Intervals"
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_wellness_is_cached():
+    """Wellness data should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22").respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}],
+        )
+
+        first = await client.get_wellness("2026-08-01", "2026-08-22")
+        second = await client.get_wellness("2026-08-01", "2026-08-22")
+
+        assert first[0]["restingHR"] == 48
+        assert second[0]["restingHR"] == 48
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_list_events_is_cached():
+    """Events listing should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get(
+            "/athlete/0/events?oldest=2026-08-01&newest=2026-08-22&category=WORKOUT"
+        ).respond(
+            200,
+            json=[{"id": "evt1", "name": "VO2max Intervals"}],
+        )
+
+        first = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+        second = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+
+        assert first[0]["name"] == "VO2max Intervals"
+        assert second[0]["name"] == "VO2max Intervals"
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_is_cached():
+    """Power curve should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/power-curves?type=Ride").respond(
+            200,
+            json={"Ride": {"60": 300}},
+        )
+
+        first = await client.get_power_curve()
+        second = await client.get_power_curve()
+
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        assert first["Ride"]["60"] == 300
+        assert second["Ride"]["60"] == 300
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_list_workouts_is_cached():
+    """Workouts listing should be cached and not trigger duplicate HTTP calls."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/workouts?folderId=folder1").respond(
+            200,
+            json=[{"id": "w1", "name": "Sweet Spot"}],
+        )
+
+        first = await client.list_workouts(folder_id="folder1")
+        second = await client.list_workouts(folder_id="folder1")
+
+        assert first[0]["name"] == "Sweet Spot"
+        assert second[0]["name"] == "Sweet Spot"
+        assert route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_update_activity_invalidates_activity_cache():
+    """Updating an activity should invalidate the activity cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get("/activity/i123").respond(
+            200,
+            json={"id": "i123", "name": "Original Name"},
+        )
+        put_route = respx_mock.put("/activity/i123").respond(
+            200,
+            json={"id": "i123", "name": "Updated Name"},
+        )
+
+        first = await client.get_activity("i123")
+        await client.update_activity("i123", {"name": "Updated Name"})
+        second = await client.get_activity("i123")
+
+        assert first["name"] == "Original Name"
+        assert second["name"] == "Original Name"
+        assert get_route.call_count == 2
+        assert put_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_activity_invalidates_activity_cache():
+    """Deleting an activity should invalidate the activity cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get("/activity/i123").respond(
+            200,
+            json={"id": "i123", "name": "To Delete"},
+        )
+        delete_route = respx_mock.delete("/activity/i123").respond(
+            204,
+            json={"status": "deleted"},
+        )
+
+        await client.get_activity("i123")
+        await client.delete_activity("i123")
+        await client.get_activity("i123")
+
+        assert get_route.call_count == 2
+        assert delete_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_event_invalidates_events_cache():
+    """Creating an event should invalidate the events list cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/events?oldest=2026-08-01&newest=2026-08-22&category=WORKOUT"
+        ).respond(
+            200,
+            json=[{"id": "evt1", "name": "Original Event"}],
+        )
+        post_route = respx_mock.post("/athlete/0/events").respond(
+            201,
+            json={"id": "evt2", "name": "New Event"},
+        )
+
+        first = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+        await client.create_event(
+            {
+                "name": "New Event",
+                "start_date_local": "2026-08-23T08:00:00",
+                "category": "WORKOUT",
+            }
+        )
+        second = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+
+        assert first[0]["name"] == "Original Event"
+        assert second[0]["name"] == "Original Event"
+        assert get_route.call_count == 2
+        assert post_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_update_event_invalidates_events_cache():
+    """Updating an event should invalidate the events list cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/events?oldest=2026-08-01&newest=2026-08-22&category=WORKOUT"
+        ).respond(
+            200,
+            json=[{"id": "evt1", "name": "Original Event"}],
+        )
+        put_route = respx_mock.put("/athlete/0/events/evt1").respond(
+            200,
+            json={"id": "evt1", "name": "Updated Event"},
+        )
+
+        first = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+        await client.update_event("evt1", {"name": "Updated Event"})
+        second = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+
+        assert first[0]["name"] == "Original Event"
+        assert second[0]["name"] == "Original Event"
+        assert get_route.call_count == 2
+        assert put_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_event_invalidates_events_cache():
+    """Deleting an event should invalidate the events list cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/events?oldest=2026-08-01&newest=2026-08-22&category=WORKOUT"
+        ).respond(
+            200,
+            json=[{"id": "evt1", "name": "Original Event"}],
+        )
+        delete_route = respx_mock.delete("/athlete/0/events/evt1").respond(
+            204,
+            json={"status": "deleted"},
+        )
+
+        first = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+        await client.delete_event("evt1")
+        second = await client.list_events(
+            oldest="2026-08-01", newest="2026-08-22", category="WORKOUT"
+        )
+
+        assert first[0]["name"] == "Original Event"
+        assert second[0]["name"] == "Original Event"
+        assert get_route.call_count == 2
+        assert delete_route.call_count == 1
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_record_wellness_invalidates_wellness_cache():
+    """Recording wellness should invalidate the wellness cache."""
+    client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get(
+            "/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22"
+        ).respond(
+            200,
+            json=[{"id": "2026-08-22", "restingHR": 48}],
+        )
+        put_route = respx_mock.put("/athlete/0/wellness/2026-08-22").respond(
+            200,
+            json={"id": "2026-08-22", "restingHR": 50},
+        )
+
+        first = await client.get_wellness("2026-08-01", "2026-08-22")
+        await client.record_wellness("2026-08-22", {"restingHR": 50})
+        second = await client.get_wellness("2026-08-01", "2026-08-22")
+
+        assert first[0]["restingHR"] == 48
+        assert second[0]["restingHR"] == 48
+        assert get_route.call_count == 2
+        assert put_route.call_count == 1
 
     await client.close()

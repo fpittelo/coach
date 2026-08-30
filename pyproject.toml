@@ -28,6 +28,8 @@ dev = [
     "respx>=0.21.1",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
 ]
 
 [project.scripts]
@@ -55,7 +57,19 @@ ignore = []
 "tests/**/*.py" = ["S101"]
 "src/coach_mcp/config.py" = ["S104"]
 
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false

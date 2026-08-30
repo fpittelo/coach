@@ -26,10 +26,12 @@ from coach_mcp.models import (
     ListEventsInput,
     ListFoldersInput,
     ListWorkoutsInput,
+    RecordWellnessBulkInput,
     RecordWellnessInput,
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    WellnessRecordItem,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ def test_get_sport_settings_input_defaults():
     assert model.athlete_id is None
     assert model.response_format == ResponseFormat.MARKDOWN
 
-    model_json = GetSportSettingsInput(athlete_id="0", response_format="json")
+    model_json = GetSportSettingsInput(athlete_id="0", response_format=ResponseFormat.JSON)
     assert model_json.athlete_id == "0"
     assert model_json.response_format == ResponseFormat.JSON
 
@@ -678,6 +680,171 @@ def test_record_wellness_input_extra_forbid():
     """Test RecordWellnessInput rejects extra fields."""
     with pytest.raises(ValidationError):
         RecordWellnessInput(date="2026-08-22", extra=True)  # type: ignore
+
+
+def test_wellness_record_item_valid():
+    """Test WellnessRecordItem with all valid fields."""
+    item = WellnessRecordItem(
+        date="2026-08-22",
+        restingHR=48,
+        hrv=65.5,
+        weight=72.5,
+        sleepSecs=28800,
+        sleepQuality=3,
+        readiness=85.5,
+        soreness=2,
+        fatigue=2,
+        stress=2,
+        mood=3,
+        injury=1,
+        comments="Slept well",
+    )
+    assert item.date == "2026-08-22"
+    assert item.restingHR == 48
+    assert item.hrv == 65.5
+    assert item.weight == 72.5
+    assert item.sleepSecs == 28800
+    assert item.sleepQuality == 3
+    assert item.readiness == 85.5
+    assert item.soreness == 2
+    assert item.fatigue == 2
+    assert item.stress == 2
+    assert item.mood == 3
+    assert item.injury == 1
+    assert item.comments == "Slept well"
+
+
+def test_wellness_record_item_defaults():
+    """Test WellnessRecordItem defaults."""
+    item = WellnessRecordItem(date="2026-08-22")
+    assert item.restingHR is None
+    assert item.hrv is None
+    assert item.weight is None
+    assert item.sleepSecs is None
+    assert item.sleepQuality is None
+    assert item.readiness is None
+    assert item.soreness is None
+    assert item.fatigue is None
+    assert item.stress is None
+    assert item.mood is None
+    assert item.injury is None
+    assert item.comments is None
+
+
+def test_wellness_record_item_invalid_date():
+    """Test WellnessRecordItem date format validation."""
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026/08/22")
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="08-22-2026")
+
+
+def test_wellness_record_item_range_validation():
+    """Test bounds validation on WellnessRecordItem numeric fields."""
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", restingHR=20)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", restingHR=200)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", weight=20.0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", weight=300.0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", sleepQuality=0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", sleepQuality=5)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", readiness=-1.0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", readiness=101.0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", hrv=-1.0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", soreness=0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", soreness=5)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", fatigue=0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", stress=5)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", mood=0)
+
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", injury=5)
+
+
+def test_wellness_record_item_extra_forbid():
+    """Test WellnessRecordItem rejects extra fields."""
+    with pytest.raises(ValidationError):
+        WellnessRecordItem(date="2026-08-22", extra=True)  # type: ignore
+
+
+def test_record_wellness_bulk_input_valid():
+    """Test RecordWellnessBulkInput with valid records list."""
+    model = RecordWellnessBulkInput(
+        records=[
+            WellnessRecordItem(date="2026-08-22", restingHR=48),
+            WellnessRecordItem(date="2026-08-23", readiness=85.5),
+        ],
+        athlete_id="0",
+        response_format=ResponseFormat.JSON,
+    )
+    assert len(model.records) == 2
+    assert model.records[0].date == "2026-08-22"
+    assert model.records[1].date == "2026-08-23"
+    assert model.athlete_id == "0"
+    assert model.response_format == ResponseFormat.JSON
+
+
+def test_record_wellness_bulk_input_min_length():
+    """Test RecordWellnessBulkInput requires at least one record."""
+    with pytest.raises(ValidationError):
+        RecordWellnessBulkInput(records=[])
+
+
+def test_record_wellness_bulk_input_max_length():
+    """Test RecordWellnessBulkInput enforces maximum 100 records."""
+    valid = RecordWellnessBulkInput(records=[WellnessRecordItem(date="2026-08-22")] * 100)
+    assert len(valid.records) == 100
+
+    with pytest.raises(ValidationError):
+        RecordWellnessBulkInput(records=[WellnessRecordItem(date="2026-08-22")] * 101)
+
+
+def test_record_wellness_bulk_input_athlete_id_validation():
+    """Test RecordWellnessBulkInput athlete_id regex validation."""
+    valid = RecordWellnessBulkInput(
+        records=[WellnessRecordItem(date="2026-08-22")], athlete_id="i12345"
+    )
+    assert valid.athlete_id == "i12345"
+
+    with pytest.raises(ValidationError):
+        RecordWellnessBulkInput(
+            records=[WellnessRecordItem(date="2026-08-22")], athlete_id="invalid"
+        )
+
+
+def test_record_wellness_bulk_input_extra_forbid():
+    """Test RecordWellnessBulkInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        RecordWellnessBulkInput(
+            records=[WellnessRecordItem(date="2026-08-22")], extra=True  # type: ignore
+        )
 
 
 def test_get_fitness_summary_input_valid():

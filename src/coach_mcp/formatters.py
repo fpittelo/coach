@@ -346,17 +346,11 @@ def _recommendation(metrics: dict[str, Any], latest: dict[str, Any] | None) -> s
     fatigue = latest.get("fatigue") if latest else None
 
     if readiness is not None and readiness < 50:
-        return (
-            "Low readiness score — prioritize recovery, sleep, "
-            "and easy movement today."
-        )
+        return "Low readiness score — prioritize recovery, sleep, " "and easy movement today."
     if (soreness is not None and soreness >= 3) or (fatigue is not None and fatigue >= 3):
         return "Elevated soreness/fatigue — reduce intensity and focus on recovery."
     if tsb is None:
-        return (
-            "Insufficient fitness data — follow your planned schedule "
-            "and monitor recovery."
-        )
+        return "Insufficient fitness data — follow your planned schedule " "and monitor recovery."
     if tsb > 25:
         return "Fresh — suitable for high-intensity session or race performance."
     if 10 <= tsb <= 25:
