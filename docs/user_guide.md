@@ -107,6 +107,8 @@ Coach MCP is configured entirely through environment variables. Create a `.env` 
 | `MCP_PORT` | Port to bind for HTTP / SSE transport. | `8000` |
 | `HTTP_TIMEOUT_SECONDS` | HTTP request timeout in seconds. | `30.0` |
 | `HTTP_MAX_RETRIES` | Maximum retry attempts on 429 / 5xx / network errors. | `3` |
+| `CACHE_TTL_SECONDS` | Default TTL in seconds for semi-static cached responses. | `300` |
+| `CACHE_TTL_VOLATILE_SECONDS` | TTL in seconds for volatile cached responses (activities, wellness, events, etc.). | `60` |
 
 ### Example `.env` file
 
@@ -124,6 +126,10 @@ MCP_PORT=8000
 # HTTP Client Behaviour
 HTTP_TIMEOUT_SECONDS=30.0
 HTTP_MAX_RETRIES=3
+
+# Caching
+CACHE_TTL_SECONDS=300
+CACHE_TTL_VOLATILE_SECONDS=60
 ```
 
 ### Notes
@@ -253,6 +259,8 @@ services:
       - MCP_PORT=${MCP_PORT:-8000}
       - HTTP_TIMEOUT_SECONDS=${HTTP_TIMEOUT_SECONDS:-30.0}
       - HTTP_MAX_RETRIES=${HTTP_MAX_RETRIES:-3}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
+      - CACHE_TTL_VOLATILE_SECONDS=${CACHE_TTL_VOLATILE_SECONDS:-60}
     read_only: true
     tmpfs:
       - /tmp

@@ -64,6 +64,7 @@ class IntervalsClient:
         timeout: float | None = None,
         max_retries: int | None = None,
         cache_ttl: int | None = None,
+        cache_ttl_volatile: int | None = None,
     ) -> None:
         self.api_key = api_key or settings.intervals_api_key
         self.default_athlete_id = athlete_id or settings.intervals_athlete_id
@@ -71,8 +72,14 @@ class IntervalsClient:
         self.timeout = timeout or settings.http_timeout_seconds
         self.max_retries = max_retries or settings.http_max_retries
         self.cache_ttl = cache_ttl if cache_ttl is not None else settings.cache_ttl_seconds
+        self.cache_ttl_volatile = (
+            cache_ttl_volatile
+            if cache_ttl_volatile is not None
+            else settings.cache_ttl_volatile_seconds
+        )
         self._client: httpx.AsyncClient | None = None
         self._cache = TTLCache(default_ttl=self.cache_ttl)
+        self._volatile_cache = TTLCache(default_ttl=self.cache_ttl_volatile)
 
     async def get_client(self) -> httpx.AsyncClient:
         """Retrieve or create an active httpx.AsyncClient."""
@@ -87,11 +94,12 @@ class IntervalsClient:
         return self._client
 
     async def close(self) -> None:
-        """Close the underlying HTTP client session and clear the cache."""
+        """Close the underlying HTTP client session and clear caches."""
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
         await self._cache.clear()
+        await self._volatile_cache.clear()
 
     async def __aenter__(self) -> "IntervalsClient":
         """Async context manager entry."""
@@ -241,15 +249,24 @@ class IntervalsClient:
     ) -> list[dict[str, Any]]:
         """List activities between oldest and newest dates (YYYY-MM-DD)."""
         target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"activities:{target_id}:{oldest}:{newest}:{limit}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(list[dict[str, Any]], cached)
         params = {"oldest": oldest, "newest": newest, "limit": limit}
-        return cast(
-            list[dict[str, Any]],
-            await self._request("GET", f"athlete/{target_id}/activities", params=params),
-        )
+        result = await self._request("GET", f"athlete/{target_id}/activities", params=params)
+        await self._volatile_cache.set(cache_key, result)
+        return cast(list[dict[str, Any]], result)
 
     async def get_activity(self, activity_id: str) -> dict[str, Any]:
         """Retrieve full details of an activity."""
-        return cast(dict[str, Any], await self._request("GET", f"activity/{activity_id}"))
+        cache_key = f"activity:{activity_id}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(dict[str, Any], cached)
+        result = await self._request("GET", f"activity/{activity_id}")
+        await self._volatile_cache.set(cache_key, result)
+        return cast(dict[str, Any], result)
 
     async def get_activity_streams(
         self,
@@ -276,11 +293,14 @@ class IntervalsClient:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Retrieve athlete mean-maximal power (MMP) curve for a sport type."""
         target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"power_curve:{target_id}:{sport_type}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(dict[str, Any] | list[dict[str, Any]], cached)
         params = {"type": sport_type}
-        return cast(
-            dict[str, Any] | list[dict[str, Any]],
-            await self._request("GET", f"athlete/{target_id}/power-curves", params=params),
-        )
+        result = await self._request("GET", f"athlete/{target_id}/power-curves", params=params)
+        await self._volatile_cache.set(cache_key, result)
+        return cast(dict[str, Any] | list[dict[str, Any]], result)
 
     async def get_power_model(
         self,
@@ -330,14 +350,18 @@ class IntervalsClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """Update activity fields (name, perceived exertion, feel, notes)."""
-        return cast(
+        result = cast(
             dict[str, Any],
             await self._request("PUT", f"activity/{activity_id}", json_data=payload),
         )
+        await self._volatile_cache.invalidate(f"activity:{activity_id}")
+        return result
 
     async def delete_activity(self, activity_id: str) -> dict[str, Any]:
         """Delete an activity."""
-        return cast(dict[str, Any], await self._request("DELETE", f"activity/{activity_id}"))
+        result = cast(dict[str, Any], await self._request("DELETE", f"activity/{activity_id}"))
+        await self._volatile_cache.invalidate(f"activity:{activity_id}")
+        return result
 
     # ---------------------------------------------------------------------------
     # Wellness & Metrics API Methods
@@ -351,11 +375,14 @@ class IntervalsClient:
     ) -> list[dict[str, Any]]:
         """Retrieve wellness history over a date range."""
         target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"wellness:{target_id}:{oldest}:{newest}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(list[dict[str, Any]], cached)
         params = {"oldest": oldest, "newest": newest}
-        return cast(
-            list[dict[str, Any]],
-            await self._request("GET", f"athlete/{target_id}/wellness", params=params),
-        )
+        result = await self._request("GET", f"athlete/{target_id}/wellness", params=params)
+        await self._volatile_cache.set(cache_key, result)
+        return cast(list[dict[str, Any]], result)
 
     async def record_wellness(
         self,
@@ -365,12 +392,14 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Record or update wellness for a specific day."""
         target_id = self._resolve_athlete(athlete_id)
-        return cast(
+        result = cast(
             dict[str, Any],
             await self._request(
                 "PUT", f"athlete/{target_id}/wellness/{date_str}", json_data=payload
             ),
         )
+        await self._volatile_cache.invalidate_prefix(f"wellness:{target_id}:")
+        return result
 
     # ---------------------------------------------------------------------------
     # Planned Workouts & Events API Methods
@@ -385,13 +414,16 @@ class IntervalsClient:
     ) -> list[dict[str, Any]]:
         """List calendar events and planned workouts."""
         target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"events:{target_id}:{oldest}:{newest}:{category}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(list[dict[str, Any]], cached)
         params: dict[str, Any] = {"oldest": oldest, "newest": newest}
         if category:
             params["category"] = category
-        return cast(
-            list[dict[str, Any]],
-            await self._request("GET", f"athlete/{target_id}/events", params=params),
-        )
+        result = await self._request("GET", f"athlete/{target_id}/events", params=params)
+        await self._volatile_cache.set(cache_key, result)
+        return cast(list[dict[str, Any]], result)
 
     async def get_event(self, event_id: str, athlete_id: str | None = None) -> dict[str, Any]:
         """Retrieve a specific calendar event."""
@@ -407,10 +439,12 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Create a planned workout or calendar event."""
         target_id = self._resolve_athlete(athlete_id)
-        return cast(
+        result = cast(
             dict[str, Any],
             await self._request("POST", f"athlete/{target_id}/events", json_data=payload),
         )
+        await self._volatile_cache.invalidate_prefix(f"events:{target_id}:")
+        return result
 
     async def update_event(
         self,
@@ -420,17 +454,21 @@ class IntervalsClient:
     ) -> dict[str, Any]:
         """Update an existing calendar event or planned workout."""
         target_id = self._resolve_athlete(athlete_id)
-        return cast(
+        result = cast(
             dict[str, Any],
             await self._request("PUT", f"athlete/{target_id}/events/{event_id}", json_data=payload),
         )
+        await self._volatile_cache.invalidate_prefix(f"events:{target_id}:")
+        return result
 
     async def delete_event(self, event_id: str, athlete_id: str | None = None) -> dict[str, Any]:
         """Delete a calendar event."""
         target_id = self._resolve_athlete(athlete_id)
-        return cast(
+        result = cast(
             dict[str, Any], await self._request("DELETE", f"athlete/{target_id}/events/{event_id}")
         )
+        await self._volatile_cache.invalidate_prefix(f"events:{target_id}:")
+        return result
 
     # ---------------------------------------------------------------------------
     # Workout Library & Folders API Methods
@@ -454,10 +492,13 @@ class IntervalsClient:
     ) -> list[dict[str, Any]]:
         """List workout templates in library."""
         target_id = self._resolve_athlete(athlete_id)
+        cache_key = f"workouts:{target_id}:{folder_id}"
+        cached = await self._volatile_cache.get(cache_key)
+        if cached is not None:
+            return cast(list[dict[str, Any]], cached)
         params = {}
         if folder_id:
             params["folderId"] = folder_id
-        return cast(
-            list[dict[str, Any]],
-            await self._request("GET", f"athlete/{target_id}/workouts", params=params),
-        )
+        result = await self._request("GET", f"athlete/{target_id}/workouts", params=params)
+        await self._volatile_cache.set(cache_key, result)
+        return cast(list[dict[str, Any]], result)

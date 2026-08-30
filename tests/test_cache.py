@@ -100,6 +100,32 @@ async def test_cache_invalidate_missing_key_is_safe():
 
 
 @pytest.mark.asyncio
+async def test_cache_invalidate_prefix_removes_matching_keys():
+    """Invalidating a prefix should remove all matching keys and leave others."""
+    cache = TTLCache(default_ttl=300)
+
+    await cache.set("events:0:2026-08-01:2026-08-22:WORKOUT", [])
+    await cache.set("events:0:2026-08-01:2026-08-22:NOTE", [])
+    await cache.set("profile:0", {})
+    await cache.invalidate_prefix("events:0:")
+
+    assert await cache.get("events:0:2026-08-01:2026-08-22:WORKOUT") is None
+    assert await cache.get("events:0:2026-08-01:2026-08-22:NOTE") is None
+    assert await cache.get("profile:0") == {}
+
+
+@pytest.mark.asyncio
+async def test_cache_invalidate_prefix_missing_prefix_is_safe():
+    """Invalidating a prefix with no matches should not raise an error."""
+    cache = TTLCache(default_ttl=300)
+
+    await cache.set("profile:0", {})
+    await cache.invalidate_prefix("wellness:0:")
+
+    assert await cache.get("profile:0") == {}
+
+
+@pytest.mark.asyncio
 async def test_cache_concurrent_set_and_get():
     """Concurrent set/get operations should be safe under the async lock."""
     cache = TTLCache(default_ttl=300)

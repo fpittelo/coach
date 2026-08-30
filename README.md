@@ -93,6 +93,8 @@ Create a `.env` file or supply environment variables:
 | `MCP_PORT` | Port for HTTP / SSE transport | `8000` |
 | `HTTP_TIMEOUT_SECONDS`| API request timeout in seconds | `30.0` |
 | `HTTP_MAX_RETRIES` | Max retries with exponential backoff on 429/5xx | `3` |
+| `CACHE_TTL_SECONDS` | Default TTL in seconds for semi-static cached responses | `300` |
+| `CACHE_TTL_VOLATILE_SECONDS` | TTL in seconds for volatile cached responses (activities, wellness, events, etc.) | `60` |
 
 ---
 

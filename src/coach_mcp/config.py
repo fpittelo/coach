@@ -72,6 +72,13 @@ class Settings(BaseSettings):
         description="Default TTL in seconds for semi-static cached responses.",
         validation_alias="CACHE_TTL_SECONDS",
     )
+    cache_ttl_volatile_seconds: int = Field(
+        default=60,
+        description=(
+            "TTL in seconds for volatile cached responses " "(activities, wellness, events, etc.)."
+        ),
+        validation_alias="CACHE_TTL_VOLATILE_SECONDS",
+    )
 
 
 settings = Settings()
