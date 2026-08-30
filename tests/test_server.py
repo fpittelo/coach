@@ -7,7 +7,11 @@ import pytest
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
-from coach_mcp.client import IntervalsAPIError, IntervalsAuthError, IntervalsNotFoundError
+from coach_mcp.client import (
+    IntervalsAPIError,
+    IntervalsAuthError,
+    IntervalsNotFoundError,
+)
 from coach_mcp.formatters import (
     format_activities_list,
     format_activity_detail,
@@ -749,9 +753,7 @@ async def test_intervals_get_readiness_dashboard_markdown(mock_date, mock_ctx, m
     mock_client.get_wellness = AsyncMock(
         return_value=[{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
     )
-    mock_client.get_sport_settings = AsyncMock(
-        return_value=[{"types": ["Ride"], "ftp": 300}]
-    )
+    mock_client.get_sport_settings = AsyncMock(return_value=[{"types": ["Ride"], "ftp": 300}])
     mock_ctx.request_context.lifespan_state["client"] = mock_client
 
     params = GetReadinessDashboardInput(days=7, response_format=ResponseFormat.MARKDOWN)
@@ -1401,9 +1403,7 @@ def test_format_readiness_dashboard_json():
     """Test readiness dashboard JSON formatter."""
     import json
 
-    wellness = [
-        {"id": "2026-08-29", "ctl": 52.0, "atl": 58.0, "readiness": 85.5}
-    ]
+    wellness = [{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0, "readiness": 85.5}]
     sport = [{"types": ["Ride"], "ftp": 300}]
     result = format_readiness_dashboard(wellness, sport, fmt_json=True)
     data = json.loads(result)

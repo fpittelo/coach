@@ -60,7 +60,7 @@ def test_get_sport_settings_input_defaults():
     assert model.athlete_id is None
     assert model.response_format == ResponseFormat.MARKDOWN
 
-    model_json = GetSportSettingsInput(athlete_id="0", response_format="json")
+    model_json = GetSportSettingsInput(athlete_id="0", response_format=ResponseFormat.JSON)
     assert model_json.athlete_id == "0"
     assert model_json.response_format == ResponseFormat.JSON
 

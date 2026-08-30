@@ -177,6 +177,7 @@ async def test_get_power_curve_success(client: IntervalsClient):
         )
 
         data = await client.get_power_curve()
+        assert isinstance(data, dict)
         assert data["Ride"]["5"] == 850
         assert data["Ride"]["60"] == 300
         await client.close()
@@ -192,6 +193,7 @@ async def test_get_power_curve_with_sport_type(client: IntervalsClient):
         )
 
         data = await client.get_power_curve(sport_type="Run")
+        assert isinstance(data, dict)
         assert data["Run"]["60"] == 320
         await client.close()
 
@@ -206,6 +208,7 @@ async def test_get_power_curve_with_athlete_id(client: IntervalsClient):
         )
 
         data = await client.get_power_curve(athlete_id="i123")
+        assert isinstance(data, dict)
         assert data["Ride"]["60"] == 310
         await client.close()
 
@@ -303,6 +306,7 @@ async def test_get_activity_power_curve_success(client: IntervalsClient):
         )
 
         data = await client.get_activity_power_curve("i123")
+        assert isinstance(data, dict)
         assert data["5"] == 900
         assert data["60"] == 320
         await client.close()
