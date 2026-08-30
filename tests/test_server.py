@@ -819,6 +819,56 @@ async def test_intervals_get_readiness_dashboard_api_error(mock_date, mock_ctx, 
     assert "Server error" in result
 
 
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_concurrent(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard awaits wellness and sport settings concurrently."""
+    import asyncio
+    import time
+
+    mock_date.today.return_value = date(2026, 8, 29)
+
+    async def slow_get_wellness(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return [{"id": "2026-08-29", "ctl": 52.0, "atl": 58.0}]
+
+    async def slow_get_sport_settings(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return [{"types": ["Ride"], "ftp": 300}]
+
+    mock_client.get_wellness = AsyncMock(side_effect=slow_get_wellness)
+    mock_client.get_sport_settings = AsyncMock(side_effect=slow_get_sport_settings)
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput(days=7, response_format=ResponseFormat.MARKDOWN)
+    start = time.perf_counter()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+    elapsed = time.perf_counter() - start
+
+    assert "Daily Readiness & Training Dashboard" in result
+    assert elapsed < 0.09  # sequential would be ~0.10s
+    mock_client.get_wellness.assert_awaited_once()
+    mock_client.get_sport_settings.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.server.date")
+async def test_intervals_get_readiness_dashboard_gather_api_error(mock_date, mock_ctx, mock_client):
+    """Test readiness dashboard handles IntervalsAPIError from one gather task."""
+    mock_date.today.return_value = date(2026, 8, 29)
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("Server error", status_code=500)
+    )
+    mock_client.get_sport_settings = AsyncMock(return_value=[{"ftp": 300}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = GetReadinessDashboardInput()
+    result = await intervals_get_readiness_dashboard(params, mock_ctx)
+
+    assert "Error fetching readiness dashboard" in result
+    assert "Server error" in result
+
+
 # ---------------------------------------------------------------------------
 # Events Tool Handler Tests
 # ---------------------------------------------------------------------------
