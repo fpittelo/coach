@@ -622,7 +622,13 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
     ),
 )
 async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
-    """Schedule a new structured workout or calendar event using workout DSL syntax."""
+    """Schedule a new structured workout or calendar event using workout DSL syntax.
+
+    The workout DSL text (``workout_doc``) is delivered via the API ``description``
+    field: the Intervals.icu server parses the DSL from ``description`` and compiles
+    the structured workout on its side. A raw DSL string is never sent in the API
+    ``workout_doc`` field (which expects a structured JSON object on write).
+    """
     client = _get_client_from_ctx(ctx)
     payload: dict[str, Any] = {
         "start_date_local": params.start_date_local,
@@ -630,10 +636,14 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
         "type": params.type,
         "category": params.category,
     }
-    if params.description:
-        payload["description"] = params.description
     if params.workout_doc:
-        payload["workout_doc"] = params.workout_doc
+        payload["description"] = (
+            f"{params.description}\n\n{params.workout_doc}"
+            if params.description
+            else params.workout_doc
+        )
+    elif params.description:
+        payload["description"] = params.description
     if params.moving_time_seconds:
         payload["moving_time"] = params.moving_time_seconds
     if params.icu_training_load is not None:
@@ -655,17 +665,27 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
     ),
 )
 async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
-    """Update date, description, title, or structured workout steps on a scheduled event."""
+    """Update date, description, title, or structured workout steps on a scheduled event.
+
+    The workout DSL text (``workout_doc``) is delivered via the API ``description``
+    field: the Intervals.icu server parses the DSL from ``description`` and compiles
+    the structured workout on its side. A raw DSL string is never sent in the API
+    ``workout_doc`` field (which expects a structured JSON object on write).
+    """
     client = _get_client_from_ctx(ctx)
     payload: dict[str, Any] = {}
     if params.start_date_local:
         payload["start_date_local"] = params.start_date_local
     if params.name:
         payload["name"] = params.name
-    if params.description is not None:
-        payload["description"] = params.description
     if params.workout_doc is not None:
-        payload["workout_doc"] = params.workout_doc
+        payload["description"] = (
+            f"{params.description}\n\n{params.workout_doc}"
+            if params.description is not None
+            else params.workout_doc
+        )
+    elif params.description is not None:
+        payload["description"] = params.description
     if params.moving_time_seconds:
         payload["moving_time"] = params.moving_time_seconds
     if params.icu_training_load is not None:
