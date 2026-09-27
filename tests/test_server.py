@@ -1120,6 +1120,101 @@ async def test_intervals_update_event(mock_ctx, mock_client):
     )
 
 
+# ---------------------------------------------------------------------------
+# Event workout_doc DSL delivery tests (issue #68)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_intervals_create_event_workout_doc_delivered_via_description(mock_ctx, mock_client):
+    """Test create event delivers workout DSL via description, never via workout_doc."""
+    mock_client.create_event = AsyncMock(return_value={"id": "evt999"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    dsl = "- 10m 55% Warmup\n3x\n- 5m 105%\n- 3m 50%"
+    params = CreateEventInput(
+        start_date_local="2026-08-23T08:00:00",
+        name="Over-Unders 3x10min",
+        workout_doc=dsl,
+    )
+    await intervals_create_event(params, mock_ctx)
+
+    mock_client.create_event.assert_awaited_once()
+    payload = mock_client.create_event.await_args.args[0]
+    assert payload["description"] == dsl
+    assert "workout_doc" not in payload
+
+
+@pytest.mark.asyncio
+async def test_intervals_create_event_description_and_workout_doc_combined(mock_ctx, mock_client):
+    """Test create event combines human description and workout DSL with a blank line."""
+    mock_client.create_event = AsyncMock(return_value={"id": "evt999"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    dsl = "- 10m 55% Warmup\n3x\n- 5m 105%\n- 3m 50%"
+    params = CreateEventInput(
+        start_date_local="2026-08-23T08:00:00",
+        name="Over-Unders 3x10min",
+        description="These are horribly nasty.",
+        workout_doc=dsl,
+    )
+    await intervals_create_event(params, mock_ctx)
+
+    mock_client.create_event.assert_awaited_once()
+    payload = mock_client.create_event.await_args.args[0]
+    assert payload["description"] == f"These are horribly nasty.\n\n{dsl}"
+    assert "workout_doc" not in payload
+
+
+@pytest.mark.asyncio
+async def test_intervals_create_event_without_description_or_workout_doc(mock_ctx, mock_client):
+    """Test create event omits description when neither description nor workout_doc given."""
+    mock_client.create_event = AsyncMock(return_value={"id": "evt999"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = CreateEventInput(
+        start_date_local="2026-08-23T08:00:00",
+        name="New Workout",
+    )
+    await intervals_create_event(params, mock_ctx)
+
+    mock_client.create_event.assert_awaited_once()
+    payload = mock_client.create_event.await_args.args[0]
+    assert "description" not in payload
+    assert "workout_doc" not in payload
+
+
+@pytest.mark.asyncio
+async def test_intervals_update_event_workout_doc_delivered_via_description(mock_ctx, mock_client):
+    """Test update event delivers workout DSL via description, never via workout_doc."""
+    mock_client.update_event = AsyncMock(return_value={"id": "evt123"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    dsl = "- 10m 55% Warmup\n3x\n- 5m 105%\n- 3m 50%"
+    params = UpdateEventInput(event_id="evt123", workout_doc=dsl)
+    await intervals_update_event(params, mock_ctx)
+
+    mock_client.update_event.assert_awaited_once()
+    payload = mock_client.update_event.await_args.args[1]
+    assert payload["description"] == dsl
+    assert "workout_doc" not in payload
+
+
+@pytest.mark.asyncio
+async def test_intervals_update_event_description_only_regression(mock_ctx, mock_client):
+    """Test update event with description only keeps description unchanged."""
+    mock_client.update_event = AsyncMock(return_value={"id": "evt123"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = UpdateEventInput(event_id="evt123", description="Updated instructions")
+    await intervals_update_event(params, mock_ctx)
+
+    mock_client.update_event.assert_awaited_once()
+    payload = mock_client.update_event.await_args.args[1]
+    assert payload["description"] == "Updated instructions"
+    assert "workout_doc" not in payload
+
+
 @pytest.mark.asyncio
 async def test_intervals_delete_event(mock_ctx, mock_client):
     """Test delete event tool."""

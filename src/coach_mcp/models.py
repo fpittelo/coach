@@ -561,7 +561,9 @@ class CreateEventInput(BaseToolModel):
     workout_doc: str | None = Field(
         default=None,
         description=(
-            "Intervals.icu structured workout DSL definition text. Example:\n"
+            "Intervals.icu structured workout DSL definition text, delivered via the "
+            "calendar 'description' field (the API parses the DSL and compiles the "
+            "structured workout on its side). Example:\n"
             "- Warm up 10m 50-65%\n"
             "3x\n"
             "- 2m 105% 90rpm\n"
@@ -595,7 +597,14 @@ class UpdateEventInput(BaseToolModel):
     )
     name: str | None = Field(default=None, description="Updated title.")
     description: str | None = Field(default=None, description="Updated instructions.")
-    workout_doc: str | None = Field(default=None, description="Updated structured workout DSL.")
+    workout_doc: str | None = Field(
+        default=None,
+        description=(
+            "Updated structured workout DSL text, delivered via the calendar "
+            "'description' field (the API parses the DSL and compiles the structured "
+            "workout on its side)."
+        ),
+    )
     moving_time_seconds: int | None = Field(
         default=None, description="Updated duration in seconds.", ge=1
     )
