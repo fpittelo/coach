@@ -186,14 +186,14 @@ pytest -v --cov=src/coach_mcp tests/
 
 ### 4.2 Docker container
 
-Pre-built images are published to the GitHub Container Registry:
+Pre-built images are published to the GitHub Container Registry for every push to `dev`, every merged pull request to `qa` or `main`, and on-demand via `workflow_dispatch`:
 
-| Trigger | Tag |
+| Trigger | Tags |
 | :--- | :--- |
-| Push to `dev` | `ghcr.io/fpittelo/coach:dev` |
-| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa` |
-| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod` |
-| Specific commit | `ghcr.io/fpittelo/coach:<sha>` |
+| Push to `dev` | `ghcr.io/fpittelo/coach:dev`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod`, `ghcr.io/fpittelo/coach:<sha>` |
+| `workflow_dispatch` | `ghcr.io/fpittelo/coach:<environment>`, `ghcr.io/fpittelo/coach:<sha>` (and `latest` for `prod`) |
 
 #### Pull and run (stdio)
 
@@ -237,6 +237,27 @@ USER coach:coach
 ```
 
 Do not override `USER` to `root` in production; doing so violates the OCI non-root security model.
+
+#### GHCR token permissions
+
+The `deploy.yaml` workflow authenticates to GHCR using the repository-scoped `GITHUB_TOKEN`. The workflow declares the minimum required permissions:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+- `contents: read` is required to check out the repository.
+- `packages: write` is required to push images to GHCR.
+
+If you pull private GHCR images locally or in another workflow, use a Personal Access Token (PAT) or GitHub App token with the `read:packages` scope:
+
+```bash
+echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin
+```
+
+For public packages, no authentication is required to pull.
 
 ### 4.3 Docker Compose
 
