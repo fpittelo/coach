@@ -452,7 +452,9 @@ Coach exposes **20 tools** grouped into six categories. All read tools support `
 
 ## 7. Intervals.icu Workout DSL Guide
 
-Planned workouts are created with the `intervals_create_event` tool using the `workout_doc` field. The `workout_doc` is plain text written in the Intervals.icu native workout description language. Intervals.icu parses this text into structured steps, calculates training load, and can export the workout to Garmin Connect, Wahoo, or Zwift.
+Planned workouts are created with the `intervals_create_event` tool using the `workout_doc` field. The `workout_doc` is plain text written in the Intervals.icu native workout description language.
+
+The MCP tool delivers this DSL text via the calendar `description` field of the Intervals.icu API: the server parses the DSL from `description` and compiles the structured workout on its side. The API `workout_doc` field itself expects a structured JSON object on write, so the tool never sends a raw DSL string there. When both `description` (human text) and `workout_doc` (DSL) are provided, the tool combines them as `"{description}\n\n{workout_doc}"` — human text, a blank line, then the DSL steps. When reading events back, the API may return `workout_doc` as structured JSON (the compiled workout document).
 
 ### 7.1 Syntax rules
 
@@ -500,6 +502,8 @@ Wind-down
 ```
 
 #### JSON payload for `intervals_create_event`
+
+The example below is the MCP tool input. The tool maps it to the outgoing API payload by merging the DSL into the calendar `description` field (`"{description}\n\n{workout_doc}"`); the API `workout_doc` key is never sent.
 
 ```json
 {
