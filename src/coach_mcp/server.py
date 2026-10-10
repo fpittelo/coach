@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
+from coach_mcp.audit import audit_tool_call
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
 from coach_mcp.formatters import (
@@ -146,6 +147,7 @@ def _format_event_workout_doc(event: dict[str, Any]) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Context) -> str:
     """Retrieve athlete profile, resting HR, weight, and general settings."""
     client = _get_client_from_ctx(ctx)
@@ -163,6 +165,7 @@ async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Con
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Context) -> str:
     """Retrieve athlete sport settings: FTP, LTHR, Max HR, and power/HR zones."""
     client = _get_client_from_ctx(ctx)
@@ -185,6 +188,7 @@ async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Conte
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -> str:
     """List activities in a date range with duration, distance, power, HR, and TSS."""
     client = _get_client_from_ctx(ctx)
@@ -209,6 +213,7 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
     """Retrieve detailed activity data: NP, IF, TSS, training effects, RPE, feel."""
     client = _get_client_from_ctx(ctx)
@@ -228,6 +233,7 @@ async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: Context) -> str:
     """Retrieve second-by-second sensor streams: watts, HR, cadence, altitude, time, distance."""
     client = _get_client_from_ctx(ctx)
@@ -250,6 +256,7 @@ async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: C
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ctx: Context) -> str:
     """Retrieve detected work and recovery intervals with power, HR, cadence, and duration."""
     client = _get_client_from_ctx(ctx)
@@ -270,6 +277,7 @@ async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ct
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) -> str:
     """Retrieve mean-maximal power (MMP) curve for an athlete or a specific activity."""
     client = _get_client_from_ctx(ctx)
@@ -290,6 +298,7 @@ async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) ->
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) -> str:
     """Retrieve athlete critical power (CP), anaerobic work capacity (W'), and Pmax model."""
     client = _get_client_from_ctx(ctx)
@@ -308,6 +317,7 @@ async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) ->
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -> str:
     """Manually record a completed workout or activity on Intervals.icu."""
     client = _get_client_from_ctx(ctx)
@@ -344,6 +354,7 @@ async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -> str:
     """Update activity title, feel (1-5), RPE (1-10), training load, or notes."""
     client = _get_client_from_ctx(ctx)
@@ -374,6 +385,7 @@ async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -
         destructive_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -> str:
     """Permanently delete an activity from Intervals.icu."""
     client = _get_client_from_ctx(ctx)
@@ -396,6 +408,7 @@ async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
     """Retrieve daily wellness: resting HR, HRV, sleep, readiness, fatigue, and soreness."""
     client = _get_client_from_ctx(ctx)
@@ -418,6 +431,7 @@ async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -> str:
     """Record or update daily wellness metrics: HR, HRV, sleep, readiness, fatigue, weight."""
     client = _get_client_from_ctx(ctx)
@@ -455,6 +469,7 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_record_wellness_bulk(params: RecordWellnessBulkInput, ctx: Context) -> str:
     """Record daily wellness metrics for multiple days in a single API call.
 
@@ -501,6 +516,7 @@ async def intervals_record_wellness_bulk(params: RecordWellnessBulkInput, ctx: C
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Context) -> str:
     """Calculate and summarize CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
     client = _get_client_from_ctx(ctx)
@@ -524,6 +540,7 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_readiness_dashboard(
     params: GetReadinessDashboardInput, ctx: Context
 ) -> str:
@@ -559,6 +576,7 @@ async def intervals_get_readiness_dashboard(
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
     """List scheduled workouts, calendar notes, and race targets in a date range."""
     client = _get_client_from_ctx(ctx)
@@ -581,6 +599,7 @@ async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
     """Retrieve complete details and workout DSL definition of a scheduled workout event."""
     client = _get_client_from_ctx(ctx)
@@ -621,6 +640,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
     """Schedule a new structured workout or calendar event using workout DSL syntax.
 
@@ -664,6 +684,7 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
     """Update date, description, title, or structured workout steps on a scheduled event.
 
@@ -706,6 +727,7 @@ async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
         destructive_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
     """Delete a scheduled workout or calendar event."""
     client = _get_client_from_ctx(ctx)
@@ -728,6 +750,7 @@ async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
     """List custom folders organizing workout templates in the athlete library."""
     client = _get_client_from_ctx(ctx)
@@ -745,6 +768,7 @@ async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> str:
     """List reusable workout templates from the Intervals.icu library."""
     client = _get_client_from_ctx(ctx)
