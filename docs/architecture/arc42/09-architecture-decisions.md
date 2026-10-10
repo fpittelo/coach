@@ -9,7 +9,7 @@
 
 | ADR | Title | Status | Date | Consumer impact |
 | :--- | :--- | :--- | :--- | :--- |
-| [0001](../../adr/0001-local-docker-only-deployment-on-vidar.md) | Local-Docker-only deployment on VIDAR (reject cloud IaC); sidecar consumption by coach-web lanes | accepted | 2026-10-10 | Aligns with [coach-web ADR-007](https://github.com/fpittelo/coach-web/blob/main/docs/adr/0007-local-first-deployment.md); supersedes #74; re-scopes #61 |
+| [0001](../../adr/0001-local-docker-only-deployment-on-vidar.md) | Local-Docker-only deployment on VIDAR (reject cloud IaC); sidecar consumption by coach-web lanes | accepted | 2026-10-10 | Aligns with [coach-web ADR-007](https://github.com/fpittelo/coach-web/blob/main/docs/architecture.md) (architecture doc §10; story [coach-web#108](https://github.com/fpittelo/coach-web/issues/108)); supersedes #74; re-scopes #61 |
 
 ## Decision conventions
 

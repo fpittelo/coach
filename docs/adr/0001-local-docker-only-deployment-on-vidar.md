@@ -6,7 +6,7 @@
 | **Date** | 2026-10-10 |
 | **Deciders** | @fpittelo (Product Owner), @architect |
 | **Technical story** | [fpittelo/coach#72](https://github.com/fpittelo/coach/issues/72) |
-| **Consumer alignment** | [fpittelo/coach-web ADR-007 — Local-First Deployment](https://github.com/fpittelo/coach-web/blob/main/docs/adr/0007-local-first-deployment.md) |
+| **Consumer alignment** | [fpittelo/coach-web ADR-007 — Local-First Deployment](https://github.com/fpittelo/coach-web/blob/main/docs/architecture.md) (recorded in coach-web architecture doc §10; story: [coach-web#108](https://github.com/fpittelo/coach-web/issues/108)) |
 
 ## Context and Problem Statement
 
@@ -89,9 +89,10 @@ Verified against coach-web's `COACH_MCP_IMAGE` defaults
 
 **Neutral / follow-ups**
 
-- #74 (standalone compose stacks with host ports 8000/8001/8002) is **folded
-  into this ADR and closed as superseded**: standalone stacks would duplicate
-  coach-web's lane topology and conflict on host port 8000 (prod lane).
+- #74 (standalone compose stacks with host ports 8000/8001/8002) is
+  **superseded by this ADR** (to be closed on merge): standalone stacks would
+  duplicate coach-web's lane topology and conflict on host port 8000 (prod
+  lane).
 - #61 (bearer token auth) is re-scoped as defense-in-depth and must cover the
   SSE transport actually used by the consumer (`/sse`), not only
   `streamable_http`.
