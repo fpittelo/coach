@@ -18,7 +18,7 @@ from coach_mcp.models import (
     ListFoldersInput,
     UpdateEventInput,
 )
-from coach_mcp.security import redact_sensitive
+from coach_mcp.security import redact_sensitive, redact_structure
 from coach_mcp.server import (
     intervals_get_athlete_profile,
 )
@@ -287,6 +287,69 @@ def test_no_false_positives_on_safe_text():
     """Safe text without secrets is returned unchanged."""
     text = "Activity i123 completed on 2026-08-22 with 250W average."
     assert redact_sensitive(text) == text
+
+
+# ---------------------------------------------------------------------------
+# redact_structure — structured redaction for the audit path (#64)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_structure_redacts_sensitive_keys():
+    """Values stored under secret-bearing keys are replaced wholesale."""
+    payload = {
+        "api_key": "sk-fake-123",
+        "token": "tok-fake-456",
+        "Authorization": "Bearer zzz",
+        "password": "hunter2",
+        "keep": "visible",
+    }
+    result = redact_structure(payload)
+    assert result["api_key"] == "[REDACTED]"
+    assert result["token"] == "[REDACTED]"
+    assert result["Authorization"] == "[REDACTED]"
+    assert result["password"] == "[REDACTED]"
+    assert result["keep"] == "visible"
+
+
+def test_redact_structure_recurses_into_nested_structures():
+    """Nested dicts and lists are redacted recursively."""
+    payload = {
+        "records": [
+            {"comments": "mail me at dev@example.com", "note": "safe"},
+            {"api_key": "sk-nested", "deep": {"access_token": "tok-deep"}},
+        ],
+    }
+    result = redact_structure(payload)
+    assert result["records"][0]["comments"] == "mail me at [REDACTED:EMAIL]"
+    assert result["records"][0]["note"] == "safe"
+    assert result["records"][1]["api_key"] == "[REDACTED]"
+    assert result["records"][1]["deep"]["access_token"] == "[REDACTED]"
+
+
+def test_redact_structure_preserves_non_string_scalars():
+    """Non-string scalars (int, float, bool, None) pass through unchanged."""
+    payload = {"count": 3, "ratio": 0.5, "flag": True, "empty": None}
+    assert redact_structure(payload) == payload
+
+
+def test_redact_structure_handles_plain_string_and_list():
+    """Top-level strings and lists are redacted via redact_sensitive."""
+    assert redact_structure("api_key=secret123") == "api_key=[REDACTED]"
+    assert redact_structure(["a@b.com", 42]) == ["[REDACTED:EMAIL]", 42]
+
+
+def test_redact_structure_json_serialized_sensitive_key():
+    """A JSON-style payload with a sensitive key is redacted (audit leak vector)."""
+    import json
+
+    payload = {"api_key": "sk-fake-json"}
+    serialized = json.dumps(payload)
+    # The legacy string redaction alone cannot catch JSON-style keys...
+    assert "sk-fake-json" in (redact_sensitive(serialized) or "")
+    # ...but the structured redaction does.
+    result = redact_structure(payload)
+    assert "sk-fake-json" not in json.dumps(result)
+    assert result["api_key"] == "[REDACTED]"
 
 
 # ---------------------------------------------------------------------------

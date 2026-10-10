@@ -1,6 +1,7 @@
 """Security utilities for secret/PII redaction and input sanitization."""
 
 import re
+from typing import Any
 
 # Basic authentication header values: Basic <base64>
 _BASIC_AUTH_RE = re.compile(r"Basic\s+[A-Za-z0-9+/=]+", re.IGNORECASE)
@@ -19,6 +20,14 @@ _API_KEY_COLON_RE = re.compile(r"(?:api_key|apikey|key):\s*[A-Za-z0-9_-]+", re.I
 
 # Email addresses
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+
+# Mapping key names whose values must never be logged (structured redaction).
+_SENSITIVE_KEY_RE = re.compile(
+    r"api[_-]?key|apikey|token|authorization|password|secret|credential|bearer",
+    re.IGNORECASE,
+)
+
+_REDACTED_PLACEHOLDER = "[REDACTED]"
 
 
 def redact_sensitive(text: str | None) -> str | None:
@@ -52,3 +61,38 @@ def redact_sensitive(text: str | None) -> str | None:
     text = _API_KEY_COLON_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED:EMAIL]", text)
     return text
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Return True if a mapping key names a secret-bearing field."""
+    return _SENSITIVE_KEY_RE.search(key) is not None
+
+
+def redact_structure(value: Any) -> Any:
+    """Recursively redact secrets and PII from structured data.
+
+    Extends :func:`redact_sensitive` to structured payloads (dicts, lists) for
+    the audit path (#64):
+
+    * values stored under sensitive keys (``api_key``, ``token``, ...) are
+      replaced wholesale with ``[REDACTED]`` — the legacy string redaction
+      cannot catch JSON-style ``"api_key": "..."`` pairs on its own;
+    * every string value passes through :func:`redact_sensitive`;
+    * non-string scalars (int, float, bool, None) are preserved.
+
+    Args:
+        value: Arbitrary structure (dict, list, str, or scalar).
+
+    Returns:
+        Structure of the same shape with sensitive content redacted.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED_PLACEHOLDER if _is_sensitive_key(str(key)) else redact_structure(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_structure(item) for item in value]
+    if isinstance(value, str):
+        return redact_sensitive(value)
+    return value
