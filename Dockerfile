@@ -58,5 +58,12 @@ USER coach:coach
 
 EXPOSE 8000
 
+# Transport-aware liveness probe (issue #75): streamable-http/sse containers
+# probe the MCP endpoint so a dead or hung server flips the container to
+# "unhealthy"; stdio containers (the image default) have no HTTP endpoint and
+# report healthy while the process — and thus the container — is alive.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD ["python", "-m", "coach_mcp.healthcheck"]
+
 # Entrypoint running coach_mcp server
 ENTRYPOINT ["python", "-m", "coach_mcp.server"]
