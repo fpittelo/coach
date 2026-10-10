@@ -371,6 +371,24 @@ class IntervalsClient:
         await self._volatile_cache.invalidate(f"activity:{activity_id}")
         return result
 
+    async def add_activity_message(self, activity_id: str, message: str) -> dict[str, Any]:
+        """Post a chat message (session comment) on an activity.
+
+        The Intervals.icu comments surface is the chat messages endpoint: the
+        body is a chat ``Message`` object; the minimal write payload carries
+        the sanitized ``message`` text (epic #82, ``icu_add_session_comment``).
+        """
+        result = cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"activity/{activity_id}/messages",
+                json_data={"message": message},
+            ),
+        )
+        await self._volatile_cache.invalidate(f"activity:{activity_id}")
+        return result
+
     # ---------------------------------------------------------------------------
     # Wellness & Metrics API Methods
     # ---------------------------------------------------------------------------

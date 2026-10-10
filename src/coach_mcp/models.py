@@ -4,7 +4,9 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from coach_mcp.security import sanitize_comment_text
 
 
 class ResponseFormat(StrEnum):
@@ -638,6 +640,65 @@ def project_wellness_days(records: list[dict[str, Any]]) -> list[WellnessDayProj
             )
         )
     return projected
+
+
+# ---------------------------------------------------------------------------
+# ICU Session Comment Models (#85)
+# ---------------------------------------------------------------------------
+
+#: Maximum length of a session comment posted to Intervals.icu chat
+#: (epic #82 binding security condition 4).
+SESSION_COMMENT_MAX_LENGTH = 2000
+
+
+class IcuAddSessionCommentInput(BaseToolModel):
+    """Input parameters for posting a debrief comment on an ICU activity.
+
+    Contract (epic #82 binding security conditions 1 and 4):
+
+    * ``confirmed`` must be ``True`` — the write is rejected server-side
+      otherwise (mirror of coach-web's plan-approval gate);
+    * ``comment`` must be server-generated from validated debrief data —
+      this tool is never a raw-LLM passthrough channel. The text is
+      sanitized (script/style blocks and HTML tags stripped, control
+      characters removed) and hard-capped at 2000 characters.
+    """
+
+    activity_id: str = Field(
+        ...,
+        description="Intervals.icu activity ID to comment on (e.g. 'i12345678').",
+        min_length=1,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    comment: str = Field(
+        ...,
+        description=(
+            "Debrief summary text, server-generated from validated debrief data "
+            "(never raw LLM output). Sanitized and capped at 2000 characters."
+        ),
+        min_length=1,
+        max_length=SESSION_COMMENT_MAX_LENGTH,
+    )
+    confirmed: bool = Field(
+        default=False,
+        description=(
+            "Explicit write confirmation. The comment is posted only when True; "
+            "unconfirmed invocations are rejected server-side."
+        ),
+    )
+
+    @field_validator("comment")
+    @classmethod
+    def _sanitize_comment(cls, value: str) -> str:
+        """Strip markup and control characters from the comment body.
+
+        Raises:
+            ValueError: If the comment is empty once sanitized.
+        """
+        sanitized = sanitize_comment_text(value)
+        if not sanitized:
+            raise ValueError("comment is empty after sanitization")
+        return sanitized
 
 
 # ---------------------------------------------------------------------------

@@ -1396,3 +1396,84 @@ async def test_client_sends_browser_like_user_agent(client: IntervalsClient):
         assert "Safari/" in user_agent
         assert "Coach-MCP-Server" not in user_agent
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Activity chat messages (#85)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_success(client: IntervalsClient):
+    """Test posting a session comment sends a chat Message object body."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages").respond(
+            200,
+            json={"id": "m1", "activityId": "i123", "message": "Great debrief."},
+        )
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+
+        assert result["id"] == "m1"
+        assert route.call_count == 1
+        request = route.calls.last.request
+        assert json.loads(request.content) == {"message": "Great debrief."}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_rate_limit_retry_then_success(client: IntervalsClient):
+    """Test comment POST 429 triggers capped Retry-After retry and succeeds."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages")
+        route.side_effect = [
+            httpx.Response(429, headers={"Retry-After": "0.01"}),
+            httpx.Response(200, json={"id": "m1"}),
+        ]
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+        assert result["id"] == "m1"
+        assert route.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_rate_limit_exhaustion(client: IntervalsClient):
+    """Test comment POST 429 exhausts capped retries and raises IntervalsRateLimitError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.post("/activity/i123/messages").respond(
+            429,
+            headers={"Retry-After": "0.01"},
+            text="Rate limited",
+        )
+
+        with pytest.raises(IntervalsRateLimitError):
+            await client.add_activity_message("i123", "Great debrief.")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_server_error_retry_then_success(client: IntervalsClient):
+    """Test comment POST 5xx triggers backoff retry and eventual success."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages")
+        route.side_effect = [
+            httpx.Response(500, text="Internal Server Error"),
+            httpx.Response(200, json={"id": "m1"}),
+        ]
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+        assert result["id"] == "m1"
+        assert route.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_not_found(client: IntervalsClient):
+    """Test comment POST on an unknown activity raises IntervalsNotFoundError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.post("/activity/nope/messages").respond(404, text="Not found")
+
+        with pytest.raises(IntervalsNotFoundError):
+            await client.add_activity_message("nope", "Great debrief.")
+    await client.close()

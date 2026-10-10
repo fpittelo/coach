@@ -32,6 +32,50 @@ _SENSITIVE_KEY_RE = re.compile(
 
 _REDACTED_PLACEHOLDER = "[REDACTED]"
 
+# Complete script/style blocks (content included) — removed wholesale so the
+# payload between the tags cannot survive as inert-looking text.
+_SCRIPT_BLOCK_RE = re.compile(
+    r"<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Any remaining HTML/XML tag (drops inline event-handler vectors such as
+# <img src=x onerror=...> together with the tag itself).
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+
+# C0 control characters (except \n and \t) and DEL.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Runs of horizontal whitespace (spaces, tabs) collapsed to a single space.
+_HORIZONTAL_WS_RE = re.compile(r"[ \t]+")
+
+
+def sanitize_comment_text(text: str) -> str:
+    """Sanitize free text destined for an upstream chat/comment field.
+
+    Used by the ``icu_add_session_comment`` write tool (epic #82 binding
+    security condition 4): the tool must never be a raw-LLM passthrough
+    channel, so markup and control characters are stripped before the text
+    is posted:
+
+    * complete ``<script>``/``<style>`` blocks (content included) are removed;
+    * any remaining HTML/XML tag is removed (kills inline event handlers);
+    * control characters (except ``\\n`` and ``\\t``) and DEL are removed;
+    * runs of spaces/tabs collapse to a single space; leading/trailing
+      whitespace is stripped. Newlines are preserved for multi-line debriefs.
+
+    Args:
+        text: Raw comment text.
+
+    Returns:
+        Sanitized text safe to post upstream.
+    """
+    without_blocks = _SCRIPT_BLOCK_RE.sub(" ", text)
+    without_tags = _HTML_TAG_RE.sub(" ", without_blocks)
+    without_controls = _CONTROL_CHARS_RE.sub("", without_tags)
+    collapsed = _HORIZONTAL_WS_RE.sub(" ", without_controls)
+    return collapsed.strip()
+
 
 def redact_sensitive(text: str | None) -> str | None:
     """Redact sensitive tokens, credentials, API keys, and email PII.

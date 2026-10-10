@@ -22,6 +22,7 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -1422,3 +1423,98 @@ def test_wellness_day_projection_ignores_non_numeric_values():
 def test_project_wellness_days_empty():
     """An empty ICU payload projects to an empty list."""
     assert project_wellness_days([]) == []
+
+
+# ---------------------------------------------------------------------------
+# ICU Session Comment Models (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_icu_add_session_comment_input_defaults():
+    """Test IcuAddSessionCommentInput defaults to unconfirmed (write gate shut)."""
+    model = IcuAddSessionCommentInput(activity_id="i12345678", comment="Great effort today.")
+    assert model.confirmed is False
+    assert model.activity_id == "i12345678"
+
+
+def test_icu_add_session_comment_input_accepts_valid_comment():
+    """Test IcuAddSessionCommentInput accepts a confirmed, in-bounds comment."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678", comment="Solid debrief: 4x8min @ 300W, RPE 7.", confirmed=True
+    )
+    assert model.confirmed is True
+    assert "4x8min" in model.comment
+
+
+def test_icu_add_session_comment_input_rejects_comment_over_2000_chars():
+    """AC3: a comment body over 2000 characters is rejected at validation."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="x" * 2001)
+
+
+def test_icu_add_session_comment_input_accepts_2000_char_comment():
+    """A comment of exactly 2000 characters is accepted."""
+    model = IcuAddSessionCommentInput(activity_id="i12345678", comment="y" * 2000)
+    assert len(model.comment) == 2000
+
+
+def test_icu_add_session_comment_input_rejects_empty_comment():
+    """Test IcuAddSessionCommentInput rejects an empty comment."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="")
+
+
+def test_icu_add_session_comment_input_rejects_whitespace_only_comment():
+    """Test IcuAddSessionCommentInput rejects a whitespace-only comment."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="   ")
+
+
+def test_icu_add_session_comment_input_sanitizes_script_markup():
+    """Binding condition 4: script blocks are stripped, never passed through."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678",
+        comment="<script>alert('xss')</script>Great ride today.",
+    )
+    assert "<script>" not in model.comment
+    assert "alert('xss')" not in model.comment
+    assert "Great ride today." in model.comment
+
+
+def test_icu_add_session_comment_input_sanitizes_event_handler_markup():
+    """Binding condition 4: inline event-handler markup is stripped."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678",
+        comment="<img src=x onerror=alert(1)>Solid work.",
+    )
+    assert "<img" not in model.comment
+    assert "onerror" not in model.comment
+    assert "Solid work." in model.comment
+
+
+def test_icu_add_session_comment_input_strips_control_characters():
+    """Binding condition 4: control characters are removed from the comment."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678", comment="Good\u0007 session\u001b today."
+    )
+    assert "\u0007" not in model.comment
+    assert "\u001b" not in model.comment
+    assert "Good session today." in model.comment
+
+
+def test_icu_add_session_comment_input_rejects_comment_sanitizing_to_empty():
+    """A comment made only of markup is rejected instead of posting emptiness."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="<script></script>")
+
+
+def test_icu_add_session_comment_input_rejects_bad_activity_id():
+    """Test IcuAddSessionCommentInput validates the activity id shape."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="../../etc/passwd", comment="ok")
+
+
+def test_icu_add_session_comment_input_extra_forbid():
+    """Test IcuAddSessionCommentInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i1", comment="ok", extra=True)  # type: ignore

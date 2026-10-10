@@ -47,6 +47,7 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -615,6 +616,67 @@ async def icu_get_wellness(params: IcuGetWellnessInput, ctx: Context) -> str:
         return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
     except Exception as exc:  # noqa: BLE001
         return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
+
+
+@mcp.tool(
+    name="icu_add_session_comment",
+    annotations=ToolAnnotations(
+        title="Add Session Debrief Comment",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    ),
+)
+@audit_tool_call
+async def icu_add_session_comment(params: IcuAddSessionCommentInput, ctx: Context) -> str:
+    """Post a debrief summary comment on a completed Intervals.icu activity.
+
+    Serves coach-web Story 3.1 (debrief persistence): structured debrief data
+    lives in coach-web's Fernet-encrypted DB; the Intervals.icu comment is the
+    athlete-visible mirror.
+
+    Contract (epic #82 binding security conditions 1, 3, 4):
+
+    * **Confirmation gate** — the write is rejected server-side unless
+      ``confirmed=True`` (mirror of coach-web's plan-approval gate); the
+      rejection is audited as a failed write.
+    * **Validated content only** — the comment must be server-generated from
+      validated debrief data; this tool is never a raw-LLM passthrough
+      channel. Text is sanitized (script/style blocks and HTML tags stripped,
+      control characters removed) and hard-capped at 2000 characters at
+      validation.
+    * **Audit** — every invocation (success or failure) emits a structured
+      audit record with secret redaction via the #64 hook.
+
+    Args:
+        params (IcuAddSessionCommentInput): Activity ID, sanitized comment
+            body (<=2000 chars), and the explicit confirmation flag.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Success message with the created message payload, or a handled
+        ``Error ...`` string (audited at ERROR level).
+    """
+    client = _get_client_from_ctx(ctx)
+    if not params.confirmed:
+        return (
+            "Error: session comment rejected — explicit confirmation is required "
+            "for this write (set confirmed=true once the debrief payload has been "
+            "human-approved)."
+        )
+    try:
+        res = await client.add_activity_message(params.activity_id, params.comment)
+        return (
+            f"Successfully posted session comment on activity "
+            f"'{params.activity_id}': {to_json_str(res)}"
+        )
+    except IntervalsAPIError as exc:
+        return (
+            redact_sensitive(
+                f"Error posting session comment on activity '{params.activity_id}': {exc}"
+            )
+            or ""
+        )
 
 
 # ---------------------------------------------------------------------------

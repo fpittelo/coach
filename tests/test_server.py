@@ -46,6 +46,7 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -61,6 +62,7 @@ from coach_mcp.models import (
 )
 from coach_mcp.server import (
     _get_client_from_ctx,
+    icu_add_session_comment,
     icu_get_wellness,
     intervals_create_activity,
     intervals_create_event,
@@ -150,6 +152,7 @@ def test_tools_registered():
         "intervals_list_folders",
         "intervals_list_workouts",
         "icu_get_wellness",
+        "icu_add_session_comment",
     ]
 
     for expected in expected_tools:
@@ -1106,6 +1109,98 @@ def test_icu_get_wellness_read_only_annotation():
     annotation = annotations["icu_get_wellness"]
     assert isinstance(annotation, ToolAnnotations)
     assert annotation.read_only_hint is True
+
+
+# ---------------------------------------------------------------------------
+# ICU Session Comment Tool (#85)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_success(mock_ctx, mock_client):
+    """Test the confirmed write posts the sanitized comment exactly once."""
+    mock_client.add_activity_message = AsyncMock(
+        return_value={"id": "m1", "activityId": "i123", "message": "Great debrief."}
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(
+        activity_id="i123", comment="Great debrief: 4x8min @ 300W.", confirmed=True
+    )
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert "Successfully posted session comment" in result
+    assert "i123" in result
+    mock_client.add_activity_message.assert_awaited_once_with(
+        "i123", "Great debrief: 4x8min @ 300W."
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_requires_confirmation(mock_ctx, mock_client):
+    """Binding condition 1 (AC2): unconfirmed invocation is rejected server-side."""
+    mock_client.add_activity_message = AsyncMock()
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(activity_id="i123", comment="Great debrief.")
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "confirmation" in result
+    mock_client.add_activity_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_posts_sanitized_text(mock_ctx, mock_client):
+    """Binding condition 4: the posted text is the sanitized comment, never raw markup."""
+    mock_client.add_activity_message = AsyncMock(return_value={"id": "m1"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(
+        activity_id="i123",
+        comment="<script>alert('xss')</script>Clean debrief text.",
+        confirmed=True,
+    )
+    await icu_add_session_comment(params, mock_ctx)
+
+    sent_text = mock_client.add_activity_message.await_args.args[1]
+    assert "<script>" not in sent_text
+    assert "alert('xss')" not in sent_text
+    assert "Clean debrief text." in sent_text
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_error(mock_ctx, mock_client):
+    """Test the write tool follows the handled error-string convention."""
+    mock_client.add_activity_message = AsyncMock(
+        side_effect=IntervalsAPIError("messages upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(activity_id="i123", comment="Great debrief.", confirmed=True)
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "messages upstream down" in result
+
+
+def test_icu_add_session_comment_annotations():
+    """AC8: a comment post is non-destructive and not idempotent."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_add_session_comment"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is False
+    assert annotation.destructive_hint is False
+    assert annotation.idempotent_hint is False
+
+
+def test_icu_add_session_comment_docstring_documents_contract():
+    """The docstring documents the validated-debrief-data contract (condition 4)."""
+    docstring = icu_add_session_comment.__doc__ or ""
+    assert "validated debrief data" in docstring
+    assert "raw-LLM" in docstring
+    assert "2000" in docstring
 
 
 # ---------------------------------------------------------------------------
