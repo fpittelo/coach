@@ -9,18 +9,45 @@ on:
 
 permissions:
   contents: read
+  # gitleaks-action posts review comments on the PR when it detects a leak
+  # (gitleaks-action v3.0.0); nothing else needs write access.
+  pull-requests: write
 
 jobs:
   test:
     name: Test & Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          # Bounded shallow fetch for the diff-scoped gitleaks scan below:
+          # on pull_request events the action scans ONLY the PR's commits,
+          # on push events ONLY the pushed commits; those commit objects must
+          # exist locally for the git log range to resolve. Depth 60 covers
+          # PR/push chains up to ~58 commits (this repo's PRs carry 1-3
+          # commits; a chain beyond the bound fails loudly, never silently).
+          fetch-depth: 60
+
+      - name: Scan for secrets (gitleaks, diff-scoped)
+        # FPITTELO PROJECT STANDARD v1 §3: secret scanning on every push and
+        # PR, diff-scoped (no full-history scans in the per-PR path). Pinned
+        # to the v3.0.0 commit SHA (no @master/@main). GITHUB_TOKEN is
+        # required for PR scans and is used to post review comments on
+        # detected leaks. No GITLEAKS_LICENSE needed (personal account).
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin the scanned binary to the version this action release defaults
+          # to, making the toolchain explicit and auditable.
+          GITLEAKS_VERSION: "8.24.3"
+          # Lean gate: no SARIF artifact upload on every run (leaks still fail
+          # the job, post a PR review comment and appear in the job summary).
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -39,10 +66,10 @@ jobs:
           pytest -v --cov=src/coach_mcp tests/
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build OCI Docker Image (Validation)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false

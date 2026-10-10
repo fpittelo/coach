@@ -18,6 +18,14 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
+#: Browser-like User-Agent required by epic #82 binding security condition 7:
+#: Cloudflare sits in front of Intervals.icu (forum/609) and bot-style product
+#: tokens risk being challenged; a standard browser string is presented instead.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
 
 class IntervalsAPIError(Exception):
     """Base exception for Intervals.icu API interactions."""
@@ -89,7 +97,7 @@ class IntervalsClient:
                 base_url=self.base_url,
                 auth=auth,
                 timeout=httpx.Timeout(self.timeout, connect=10.0),
-                headers={"Accept": "application/json", "User-Agent": "Coach-MCP-Server/0.1.0"},
+                headers={"Accept": "application/json", "User-Agent": BROWSER_USER_AGENT},
             )
         return self._client
 
@@ -360,6 +368,24 @@ class IntervalsClient:
     async def delete_activity(self, activity_id: str) -> dict[str, Any]:
         """Delete an activity."""
         result = cast(dict[str, Any], await self._request("DELETE", f"activity/{activity_id}"))
+        await self._volatile_cache.invalidate(f"activity:{activity_id}")
+        return result
+
+    async def add_activity_message(self, activity_id: str, message: str) -> dict[str, Any]:
+        """Post a chat message (session comment) on an activity.
+
+        The Intervals.icu comments surface is the chat messages endpoint: the
+        body is a chat ``Message`` object; the minimal write payload carries
+        the sanitized ``message`` text (epic #82, ``icu_add_session_comment``).
+        """
+        result = cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"activity/{activity_id}/messages",
+                json_data={"message": message},
+            ),
+        )
         await self._volatile_cache.invalidate(f"activity:{activity_id}")
         return result
 

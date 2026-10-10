@@ -102,6 +102,7 @@ Coach MCP is configured entirely through environment variables. Create a `.env` 
 | `INTERVALS_API_KEY` | **Required.** Your Intervals.icu API key. | — |
 | `INTERVALS_ATHLETE_ID` | Athlete ID (`0` for self, `iXXXXX` for coached athlete). | `0` |
 | `INTERVALS_BASE_URL` | Intervals.icu API base URL. | `https://intervals.icu/api/v1` |
+| `COACH_MCP_AUTH_TOKEN` | Bearer token protecting the MCP HTTP endpoint (streamable-http/SSE). | — |
 | `MCP_TRANSPORT` | Transport mode: `stdio`, `streamable_http`, `streamable-http`, or `sse`. | `stdio` |
 | `MCP_HOST` | Host to bind for HTTP / SSE transport. | `0.0.0.0` |
 | `MCP_PORT` | Port to bind for HTTP / SSE transport. | `8000` |
@@ -137,6 +138,34 @@ CACHE_TTL_VOLATILE_SECONDS=60
 - `MCP_TRANSPORT` accepts both `streamable_http` (underscore) and `streamable-http` (hyphen) for convenience.
 - For stdio clients (Claude Desktop, OpenCode), keep `MCP_TRANSPORT=stdio`.
 - For remote HTTP/SSE clients, set `MCP_TRANSPORT=streamable_http` and expose `MCP_PORT`.
+
+### Docker secrets (`_FILE` pattern)
+
+`INTERVALS_API_KEY` and `COACH_MCP_AUTH_TOKEN` can be read from Docker secret files instead of environment variables, so they no longer appear in `docker inspect` output or `/proc/<pid>/environ`:
+
+- Set `INTERVALS_API_KEY_FILE` (or `COACH_MCP_AUTH_TOKEN_FILE`) to the path of a mounted secret file — Docker secrets mount at `/run/secrets/<name>` with mode `0400` — and the secret is read from that file at startup.
+- **Precedence:** the `_FILE` variant is authoritative when set. Setting **both** the direct env var and its `_FILE` variant is ambiguous and fails fast at startup (silent precedence could mask a stale secret and surface only as confusing 401s downstream).
+- **Fail-fast:** a missing, unreadable, or empty secret file aborts startup with a clear error naming the env var and file path. The file path may appear in logs; the secret content never does.
+- `_FILE` variants are read from the process environment only (compose/Kubernetes `environment:`), not from the `.env` file.
+
+Example Docker Compose integration (client-side compose lives in the `coach-web` repo):
+
+```yaml
+services:
+  coach-mcp:
+    secrets:
+      - intervals_api_key
+      - coach_mcp_auth_token
+    environment:
+      INTERVALS_API_KEY_FILE: /run/secrets/intervals_api_key
+      COACH_MCP_AUTH_TOKEN_FILE: /run/secrets/coach_mcp_auth_token
+
+secrets:
+  intervals_api_key:
+    file: ./secrets/intervals_api_key.txt
+  coach_mcp_auth_token:
+    file: ./secrets/coach_mcp_auth_token.txt
+```
 
 ---
 
@@ -186,14 +215,14 @@ pytest -v --cov=src/coach_mcp tests/
 
 ### 4.2 Docker container
 
-Pre-built images are published to the GitHub Container Registry:
+Pre-built images are published to the GitHub Container Registry for every push to `dev`, every merged pull request to `qa` or `main`, and on-demand via `workflow_dispatch`:
 
-| Trigger | Tag |
+| Trigger | Tags |
 | :--- | :--- |
-| Push to `dev` | `ghcr.io/fpittelo/coach:dev` |
-| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa` |
-| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod` |
-| Specific commit | `ghcr.io/fpittelo/coach:<sha>` |
+| Push to `dev` | `ghcr.io/fpittelo/coach:dev`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa`, `ghcr.io/fpittelo/coach:<sha>` |
+| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod`, `ghcr.io/fpittelo/coach:<sha>` |
+| `workflow_dispatch` | `ghcr.io/fpittelo/coach:<environment>`, `ghcr.io/fpittelo/coach:<sha>` (and `latest` for `prod`) |
 
 #### Pull and run (stdio)
 
@@ -237,6 +266,27 @@ USER coach:coach
 ```
 
 Do not override `USER` to `root` in production; doing so violates the OCI non-root security model.
+
+#### GHCR token permissions
+
+The `deploy.yaml` workflow authenticates to GHCR using the repository-scoped `GITHUB_TOKEN`. The workflow declares the minimum required permissions:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+- `contents: read` is required to check out the repository.
+- `packages: write` is required to push images to GHCR.
+
+If you pull private GHCR images locally or in another workflow, use a Personal Access Token (PAT) or GitHub App token with the `read:packages` scope:
+
+```bash
+echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin
+```
+
+For public packages, no authentication is required to pull.
 
 ### 4.3 Docker Compose
 
