@@ -21,6 +21,7 @@ from coach_mcp.formatters import (
     format_events_list,
     format_fitness_summary,
     format_folders,
+    format_icu_wellness,
     format_power_curve,
     format_power_model,
     format_profile,
@@ -46,6 +47,7 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -55,6 +57,7 @@ from coach_mcp.models import (
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    project_wellness_days,
 )
 from coach_mcp.security import redact_sensitive
 
@@ -562,6 +565,56 @@ async def intervals_get_readiness_dashboard(
         return redact_sensitive(f"Error fetching readiness dashboard: {exc}") or ""
     except Exception as exc:  # noqa: BLE001
         return redact_sensitive(f"Error fetching readiness dashboard: {exc}") or ""
+
+
+# ---------------------------------------------------------------------------
+# ICU Bounded Read Tools (Epic #82)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="icu_get_wellness",
+    annotations=ToolAnnotations(
+        title="Get Bounded Wellness History (Health-Field Whitelist)",
+        read_only_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_get_wellness(params: IcuGetWellnessInput, ctx: Context) -> str:
+    """Read daily wellness records bounded to a 90-day window, whitelist-projected.
+
+    Serves coach-web Epic 3/4 (debrief context, longitudinal trends). The
+    date range is clamped server-side to at most 90 days (binding security
+    condition 1) and the response exposes only the whitelisted health fields
+    — sleep, HRV, soreness, fatigue, stress, readiness, CTL, ATL, and TSB
+    derived as CTL - ATL (binding security condition 2). The raw
+    Intervals.icu payload is never passed through: weight, resting HR, mood,
+    injury, free-text comments, and provider measurements are dropped by the
+    projection.
+
+    Args:
+        params (IcuGetWellnessInput): Validated date range (defaults to the
+            last 30 days), optional athlete ID, and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Markdown table or JSON array of whitelisted daily projections.
+    """
+    client = _get_client_from_ctx(ctx)
+    try:
+        raw_records = await client.get_wellness(
+            oldest=cast(str, params.oldest),
+            newest=cast(str, params.newest),
+            athlete_id=params.athlete_id,
+        )
+        projected = project_wellness_days(raw_records)
+        return format_icu_wellness(
+            projected, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
 
 
 # ---------------------------------------------------------------------------

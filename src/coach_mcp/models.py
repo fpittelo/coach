@@ -1,7 +1,8 @@
 """Pydantic v2 input and output models for Coach MCP."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -474,6 +475,169 @@ class GetReadinessDashboardInput(BaseToolModel):
         default=ResponseFormat.MARKDOWN,
         description="Output format: 'markdown' or 'json'.",
     )
+
+
+# ---------------------------------------------------------------------------
+# ICU Bounded Wellness Models (#84)
+# ---------------------------------------------------------------------------
+
+#: Maximum date-range span (in days) the bounded wellness read may cover per
+#: call. Epic #82 binding security condition 1: ``oldest`` is clamped
+#: server-side so an exfiltration-prone health read can never exceed this
+#: window regardless of the requested range.
+ICU_WELLNESS_MAX_SPAN_DAYS = 90
+
+#: Default look-back window (in days) when no date range is provided.
+ICU_WELLNESS_DEFAULT_DAYS = 30
+
+
+def _parse_iso_date(value: str, field_name: str) -> date:
+    """Parse a strict ``YYYY-MM-DD`` string into a real calendar date.
+
+    Uses :meth:`datetime.strptime` (not ``date.fromisoformat``) so date
+    parsing stays functional in tests that patch the module-level ``date``
+    symbol to mock ``date.today()``.
+
+    Raises:
+        ValueError: If the string is not a real calendar date.
+    """
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"{field_name} is not a valid calendar date: {value!r}") from exc
+
+
+class IcuGetWellnessInput(BaseToolModel):
+    """Input parameters for the bounded daily wellness read (``icu_get_wellness``).
+
+    The requested date range is validated and bounded server-side: ``oldest``
+    is clamped so that the ``oldest``→``newest`` span never exceeds
+    :data:`ICU_WELLNESS_MAX_SPAN_DAYS` (90) days, regardless of what the
+    caller requests.
+    """
+
+    oldest: str | None = Field(
+        default=None,
+        description=(
+            "Oldest date (YYYY-MM-DD). Defaults to 30 days ago. Clamped "
+            "server-side to a maximum 90-day span before newest."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+    @model_validator(mode="after")
+    def _set_and_clamp_dates(self) -> "IcuGetWellnessInput":
+        """Apply smart defaults, validate calendar dates, and clamp the span.
+
+        Raises:
+            ValueError: If either date is not a real calendar date or if
+                ``oldest`` is after ``newest``.
+        """
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=ICU_WELLNESS_DEFAULT_DAYS)).isoformat()
+
+        newest_date = _parse_iso_date(self.newest, "newest")
+        oldest_date = _parse_iso_date(self.oldest, "oldest")
+        if oldest_date > newest_date:
+            raise ValueError("oldest must be on or before newest")
+
+        span_days = (newest_date - oldest_date).days
+        if span_days > ICU_WELLNESS_MAX_SPAN_DAYS:
+            self.oldest = (newest_date - timedelta(days=ICU_WELLNESS_MAX_SPAN_DAYS)).isoformat()
+        return self
+
+
+class WellnessDayProjection(BaseToolModel):
+    """Whitelisted projection of one daily Intervals.icu wellness record.
+
+    Epic #82 binding security condition 2: the bounded wellness read exposes
+    only the health fields coach-web needs (sleep, HRV, soreness, fatigue,
+    stress, readiness, ctl, atl) — never a raw pass-through of the ICU
+    payload. ``tsb`` is derived server-side as ``ctl - atl``.
+    """
+
+    date: str = Field(..., description="Calendar date (YYYY-MM-DD).")
+    sleep_hours: float | None = Field(
+        default=None, description="Sleep duration in hours (derived from sleepSecs)."
+    )
+    hrv: float | None = Field(default=None, description="HRV (rMSSD in ms).")
+    soreness: float | None = Field(default=None, description="Muscle soreness level (1-4).")
+    fatigue: float | None = Field(default=None, description="Fatigue level (1-4).")
+    stress: float | None = Field(default=None, description="Stress level (1-4).")
+    readiness: float | None = Field(default=None, description="Readiness score (0-100).")
+    ctl: float | None = Field(default=None, description="Chronic training load (fitness).")
+    atl: float | None = Field(default=None, description="Acute training load (fatigue).")
+    tsb: float | None = Field(
+        default=None, description="Training stress balance (derived as ctl - atl)."
+    )
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    """Coerce an ICU payload value to a finite float, or None if not numeric.
+
+    Booleans and non-numeric types (strings, dicts, lists) are dropped so a
+    malformed upstream payload can never smuggle unexpected content through
+    the whitelist projection.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def project_wellness_days(records: list[dict[str, Any]]) -> list[WellnessDayProjection]:
+    """Project raw Intervals.icu wellness records onto the health-field whitelist.
+
+    This is the security boundary for the bounded wellness read: every field
+    not present on :class:`WellnessDayProjection` is discarded here, so raw
+    ICU payload content (weight, resting HR, mood, injury, free-text comments,
+    provider measurements, unknown future fields) can never reach tool output.
+
+    Args:
+        records: Raw wellness records as returned by the ICU API.
+
+    Returns:
+        Whitelisted daily projections with ``tsb`` derived as ``ctl - atl``.
+    """
+    projected: list[WellnessDayProjection] = []
+    for record in records:
+        ctl = _numeric_or_none(record.get("ctl"))
+        atl = _numeric_or_none(record.get("atl"))
+        tsb = round(ctl - atl, 2) if ctl is not None and atl is not None else None
+
+        sleep_secs = _numeric_or_none(record.get("sleepSecs"))
+        sleep_hours = round(sleep_secs / 3600.0, 2) if sleep_secs is not None else None
+
+        projected.append(
+            WellnessDayProjection(
+                date=str(record.get("id", "")),
+                sleep_hours=sleep_hours,
+                hrv=_numeric_or_none(record.get("hrv")),
+                soreness=_numeric_or_none(record.get("soreness")),
+                fatigue=_numeric_or_none(record.get("fatigue")),
+                stress=_numeric_or_none(record.get("stress")),
+                readiness=_numeric_or_none(record.get("readiness")),
+                ctl=ctl,
+                atl=atl,
+                tsb=tsb,
+            )
+        )
+    return projected
 
 
 # ---------------------------------------------------------------------------

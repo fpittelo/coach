@@ -18,6 +18,14 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
+#: Browser-like User-Agent required by epic #82 binding security condition 7:
+#: Cloudflare sits in front of Intervals.icu (forum/609) and bot-style product
+#: tokens risk being challenged; a standard browser string is presented instead.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
 
 class IntervalsAPIError(Exception):
     """Base exception for Intervals.icu API interactions."""
@@ -89,7 +97,7 @@ class IntervalsClient:
                 base_url=self.base_url,
                 auth=auth,
                 timeout=httpx.Timeout(self.timeout, connect=10.0),
-                headers={"Accept": "application/json", "User-Agent": "Coach-MCP-Server/0.1.0"},
+                headers={"Accept": "application/json", "User-Agent": BROWSER_USER_AGENT},
             )
         return self._client
 
