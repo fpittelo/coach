@@ -1,9 +1,50 @@
 """Configuration settings for Coach MCP."""
 
-from typing import Literal
+import logging
+import os
+from pathlib import Path
+from typing import Final, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+
+class SecretResolutionError(RuntimeError):
+    """Raised when a secret referenced via a *_FILE env var cannot be resolved.
+
+    Deliberately derives from RuntimeError (not ValueError) so pydantic does
+    not wrap it into a ValidationError — the fail-fast startup message stays
+    intact and actionable.
+    """
+
+
+def _read_secret_file(file_env_var: str, file_path: str) -> str:
+    """Read a secret from a Docker-secrets style file, failing fast on problems.
+
+    Missing, unreadable, or empty files raise immediately: a silently-empty
+    API key would only surface as confusing 401s downstream. The file path may
+    appear in error messages and logs; the secret content must never.
+    """
+    try:
+        content = Path(file_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SecretResolutionError(
+            f"{file_env_var}={file_path}: cannot read secret file "
+            f"({exc.strerror or type(exc).__name__})"
+        ) from exc
+    secret = content.strip()
+    if not secret:
+        raise SecretResolutionError(f"{file_env_var}={file_path}: secret file is empty")
+    return secret
+
+
+# Secret-bearing env vars and their Docker-secrets _FILE variants (issue #63).
+_SECRET_FILE_ENV_VARS: Final[dict[str, str]] = {
+    "INTERVALS_API_KEY": "INTERVALS_API_KEY_FILE",
+    "COACH_MCP_AUTH_TOKEN": "COACH_MCP_AUTH_TOKEN_FILE",
+}
 
 
 class Settings(BaseSettings):
@@ -33,6 +74,13 @@ class Settings(BaseSettings):
         default="https://intervals.icu/api/v1",
         description="Intervals.icu API base endpoint URL.",
         validation_alias="INTERVALS_BASE_URL",
+    )
+
+    # MCP HTTP bearer auth (consumed by the HTTP auth layer; config-only here)
+    coach_mcp_auth_token: str = Field(
+        default="",
+        description="Bearer token protecting the MCP HTTP endpoint (streamable-http/SSE).",
+        validation_alias="COACH_MCP_AUTH_TOKEN",
     )
 
     # Transport and Server Settings
@@ -79,6 +127,40 @@ class Settings(BaseSettings):
         ),
         validation_alias="CACHE_TTL_VOLATILE_SECONDS",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_secret_files(cls, data: object) -> object:
+        """Resolve *_FILE secret references before field validation.
+
+        For each secret-bearing env var, if its ``_FILE`` variant is set
+        (non-empty), the secret is read from that file and used as the
+        effective value. Docker secrets mount at ``/run/secrets/<name>`` with
+        mode 0400, so containers inject e.g.
+        ``INTERVALS_API_KEY_FILE=/run/secrets/intervals_api_key`` and the key
+        never appears in ``docker inspect``.
+
+        Precedence: the ``_FILE`` variant is authoritative when set. Setting
+        BOTH the direct env var and its ``_FILE`` variant is ambiguous and
+        fails fast — silent precedence could mask a stale secret and surface
+        only as confusing downstream 401s. ``_FILE`` variants are read from
+        the process environment only (compose/K8s ``environment:``), not from
+        the ``.env`` file.
+        """
+        if not isinstance(data, dict):
+            return data
+        for env_var, file_env_var in _SECRET_FILE_ENV_VARS.items():
+            file_path = os.environ.get(file_env_var)
+            if not file_path:
+                continue
+            if data.get(env_var) is not None:
+                raise SecretResolutionError(
+                    f"Ambiguous secret configuration: both {env_var} and "
+                    f"{file_env_var} are set; set only one of them."
+                )
+            data[env_var] = _read_secret_file(file_env_var, file_path)
+            logger.info("Loaded %s from secret file %s", env_var, file_path)
+        return data
 
 
 settings = Settings()

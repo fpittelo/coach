@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
+from coach_mcp.audit import audit_tool_call
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
 from coach_mcp.formatters import (
@@ -20,6 +21,7 @@ from coach_mcp.formatters import (
     format_events_list,
     format_fitness_summary,
     format_folders,
+    format_icu_wellness,
     format_power_curve,
     format_power_model,
     format_profile,
@@ -45,6 +47,8 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
+    IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -54,6 +58,7 @@ from coach_mcp.models import (
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    project_wellness_days,
 )
 from coach_mcp.security import redact_sensitive
 
@@ -146,6 +151,7 @@ def _format_event_workout_doc(event: dict[str, Any]) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Context) -> str:
     """Retrieve athlete profile, resting HR, weight, and general settings."""
     client = _get_client_from_ctx(ctx)
@@ -163,6 +169,7 @@ async def intervals_get_athlete_profile(params: GetAthleteProfileInput, ctx: Con
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Context) -> str:
     """Retrieve athlete sport settings: FTP, LTHR, Max HR, and power/HR zones."""
     client = _get_client_from_ctx(ctx)
@@ -185,6 +192,7 @@ async def intervals_get_sport_settings(params: GetSportSettingsInput, ctx: Conte
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -> str:
     """List activities in a date range with duration, distance, power, HR, and TSS."""
     client = _get_client_from_ctx(ctx)
@@ -209,6 +217,7 @@ async def intervals_list_activities(params: ListActivitiesInput, ctx: Context) -
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
     """Retrieve detailed activity data: NP, IF, TSS, training effects, RPE, feel."""
     client = _get_client_from_ctx(ctx)
@@ -228,6 +237,7 @@ async def intervals_get_activity(params: GetActivityInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: Context) -> str:
     """Retrieve second-by-second sensor streams: watts, HR, cadence, altitude, time, distance."""
     client = _get_client_from_ctx(ctx)
@@ -250,6 +260,7 @@ async def intervals_get_activity_streams(params: GetActivityStreamsInput, ctx: C
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ctx: Context) -> str:
     """Retrieve detected work and recovery intervals with power, HR, cadence, and duration."""
     client = _get_client_from_ctx(ctx)
@@ -270,6 +281,7 @@ async def intervals_get_activity_intervals(params: GetActivityIntervalsInput, ct
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) -> str:
     """Retrieve mean-maximal power (MMP) curve for an athlete or a specific activity."""
     client = _get_client_from_ctx(ctx)
@@ -290,6 +302,7 @@ async def intervals_get_power_curve(params: GetPowerCurveInput, ctx: Context) ->
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) -> str:
     """Retrieve athlete critical power (CP), anaerobic work capacity (W'), and Pmax model."""
     client = _get_client_from_ctx(ctx)
@@ -308,6 +321,7 @@ async def intervals_get_power_model(params: GetPowerModelInput, ctx: Context) ->
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -> str:
     """Manually record a completed workout or activity on Intervals.icu."""
     client = _get_client_from_ctx(ctx)
@@ -344,6 +358,7 @@ async def intervals_create_activity(params: CreateActivityInput, ctx: Context) -
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -> str:
     """Update activity title, feel (1-5), RPE (1-10), training load, or notes."""
     client = _get_client_from_ctx(ctx)
@@ -374,6 +389,7 @@ async def intervals_update_activity(params: UpdateActivityInput, ctx: Context) -
         destructive_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -> str:
     """Permanently delete an activity from Intervals.icu."""
     client = _get_client_from_ctx(ctx)
@@ -396,6 +412,7 @@ async def intervals_delete_activity(params: DeleteActivityInput, ctx: Context) -
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
     """Retrieve daily wellness: resting HR, HRV, sleep, readiness, fatigue, and soreness."""
     client = _get_client_from_ctx(ctx)
@@ -418,6 +435,7 @@ async def intervals_get_wellness(params: GetWellnessInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -> str:
     """Record or update daily wellness metrics: HR, HRV, sleep, readiness, fatigue, weight."""
     client = _get_client_from_ctx(ctx)
@@ -455,6 +473,7 @@ async def intervals_record_wellness(params: RecordWellnessInput, ctx: Context) -
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_record_wellness_bulk(params: RecordWellnessBulkInput, ctx: Context) -> str:
     """Record daily wellness metrics for multiple days in a single API call.
 
@@ -501,6 +520,7 @@ async def intervals_record_wellness_bulk(params: RecordWellnessBulkInput, ctx: C
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Context) -> str:
     """Calculate and summarize CTL (Fitness), ATL (Fatigue), and TSB (Form)."""
     client = _get_client_from_ctx(ctx)
@@ -524,6 +544,7 @@ async def intervals_get_fitness_summary(params: GetFitnessSummaryInput, ctx: Con
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_readiness_dashboard(
     params: GetReadinessDashboardInput, ctx: Context
 ) -> str:
@@ -548,6 +569,117 @@ async def intervals_get_readiness_dashboard(
 
 
 # ---------------------------------------------------------------------------
+# ICU Bounded Read Tools (Epic #82)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="icu_get_wellness",
+    annotations=ToolAnnotations(
+        title="Get Bounded Wellness History (Health-Field Whitelist)",
+        read_only_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_get_wellness(params: IcuGetWellnessInput, ctx: Context) -> str:
+    """Read daily wellness records bounded to a 90-day window, whitelist-projected.
+
+    Serves coach-web Epic 3/4 (debrief context, longitudinal trends). The
+    date range is clamped server-side to at most 90 days (binding security
+    condition 1) and the response exposes only the whitelisted health fields
+    — sleep, HRV, soreness, fatigue, stress, readiness, CTL, ATL, and TSB
+    derived as CTL - ATL (binding security condition 2). The raw
+    Intervals.icu payload is never passed through: weight, resting HR, mood,
+    injury, free-text comments, and provider measurements are dropped by the
+    projection.
+
+    Args:
+        params (IcuGetWellnessInput): Validated date range (defaults to the
+            last 30 days), optional athlete ID, and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Markdown table or JSON array of whitelisted daily projections.
+    """
+    client = _get_client_from_ctx(ctx)
+    try:
+        raw_records = await client.get_wellness(
+            oldest=cast(str, params.oldest),
+            newest=cast(str, params.newest),
+            athlete_id=params.athlete_id,
+        )
+        projected = project_wellness_days(raw_records)
+        return format_icu_wellness(
+            projected, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching bounded wellness records: {exc}") or ""
+
+
+@mcp.tool(
+    name="icu_add_session_comment",
+    annotations=ToolAnnotations(
+        title="Add Session Debrief Comment",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    ),
+)
+@audit_tool_call
+async def icu_add_session_comment(params: IcuAddSessionCommentInput, ctx: Context) -> str:
+    """Post a debrief summary comment on a completed Intervals.icu activity.
+
+    Serves coach-web Story 3.1 (debrief persistence): structured debrief data
+    lives in coach-web's Fernet-encrypted DB; the Intervals.icu comment is the
+    athlete-visible mirror.
+
+    Contract (epic #82 binding security conditions 1, 3, 4):
+
+    * **Confirmation gate** — the write is rejected server-side unless
+      ``confirmed=True`` (mirror of coach-web's plan-approval gate); the
+      rejection is audited as a failed write.
+    * **Validated content only** — the comment must be server-generated from
+      validated debrief data; this tool is never a raw-LLM passthrough
+      channel. Text is sanitized (script/style blocks and HTML tags stripped,
+      control characters removed) and hard-capped at 2000 characters at
+      validation.
+    * **Audit** — every invocation (success or failure) emits a structured
+      audit record with secret redaction via the #64 hook.
+
+    Args:
+        params (IcuAddSessionCommentInput): Activity ID, sanitized comment
+            body (<=2000 chars), and the explicit confirmation flag.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Success message with the created message payload, or a handled
+        ``Error ...`` string (audited at ERROR level).
+    """
+    client = _get_client_from_ctx(ctx)
+    if not params.confirmed:
+        return (
+            "Error: session comment rejected — explicit confirmation is required "
+            "for this write (set confirmed=true once the debrief payload has been "
+            "human-approved)."
+        )
+    try:
+        res = await client.add_activity_message(params.activity_id, params.comment)
+        return (
+            f"Successfully posted session comment on activity "
+            f"'{params.activity_id}': {to_json_str(res)}"
+        )
+    except IntervalsAPIError as exc:
+        return (
+            redact_sensitive(
+                f"Error posting session comment on activity '{params.activity_id}': {exc}"
+            )
+            or ""
+        )
+
+
+# ---------------------------------------------------------------------------
 # Planned Workouts & Events Tools
 # ---------------------------------------------------------------------------
 
@@ -559,6 +691,7 @@ async def intervals_get_readiness_dashboard(
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
     """List scheduled workouts, calendar notes, and race targets in a date range."""
     client = _get_client_from_ctx(ctx)
@@ -581,6 +714,7 @@ async def intervals_list_events(params: ListEventsInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
     """Retrieve complete details and workout DSL definition of a scheduled workout event."""
     client = _get_client_from_ctx(ctx)
@@ -621,6 +755,7 @@ async def intervals_get_event(params: GetEventInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
     """Schedule a new structured workout or calendar event using workout DSL syntax.
 
@@ -664,6 +799,7 @@ async def intervals_create_event(params: CreateEventInput, ctx: Context) -> str:
         idempotent_hint=False,
     ),
 )
+@audit_tool_call
 async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
     """Update date, description, title, or structured workout steps on a scheduled event.
 
@@ -706,6 +842,7 @@ async def intervals_update_event(params: UpdateEventInput, ctx: Context) -> str:
         destructive_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
     """Delete a scheduled workout or calendar event."""
     client = _get_client_from_ctx(ctx)
@@ -728,6 +865,7 @@ async def intervals_delete_event(params: DeleteEventInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
     """List custom folders organizing workout templates in the athlete library."""
     client = _get_client_from_ctx(ctx)
@@ -745,6 +883,7 @@ async def intervals_list_folders(params: ListFoldersInput, ctx: Context) -> str:
         read_only_hint=True,
     ),
 )
+@audit_tool_call
 async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> str:
     """List reusable workout templates from the Intervals.icu library."""
     client = _get_client_from_ctx(ctx)

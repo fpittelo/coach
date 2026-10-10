@@ -1,6 +1,8 @@
 """Security utilities for secret/PII redaction and input sanitization."""
 
+import json
 import re
+from typing import Any
 
 # Basic authentication header values: Basic <base64>
 _BASIC_AUTH_RE = re.compile(r"Basic\s+[A-Za-z0-9+/=]+", re.IGNORECASE)
@@ -19,6 +21,60 @@ _API_KEY_COLON_RE = re.compile(r"(?:api_key|apikey|key):\s*[A-Za-z0-9_-]+", re.I
 
 # Email addresses
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+
+# Mapping key names whose values must never be logged (structured redaction).
+# ``key`` matches bare "key" and "*_key" suffixes (private_key, access_key, ...)
+# without swallowing ordinary words that merely contain "key" (monkey, hotkey).
+_SENSITIVE_KEY_RE = re.compile(
+    r"api[_-]?key|apikey|(?:^|_)key(?:$)|token|authorization|password|secret|credential|bearer",
+    re.IGNORECASE,
+)
+
+_REDACTED_PLACEHOLDER = "[REDACTED]"
+
+# Complete script/style blocks (content included) — removed wholesale so the
+# payload between the tags cannot survive as inert-looking text.
+_SCRIPT_BLOCK_RE = re.compile(
+    r"<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Any remaining HTML/XML tag (drops inline event-handler vectors such as
+# <img src=x onerror=...> together with the tag itself).
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+
+# C0 control characters (except \n and \t) and DEL.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Runs of horizontal whitespace (spaces, tabs) collapsed to a single space.
+_HORIZONTAL_WS_RE = re.compile(r"[ \t]+")
+
+
+def sanitize_comment_text(text: str) -> str:
+    """Sanitize free text destined for an upstream chat/comment field.
+
+    Used by the ``icu_add_session_comment`` write tool (epic #82 binding
+    security condition 4): the tool must never be a raw-LLM passthrough
+    channel, so markup and control characters are stripped before the text
+    is posted:
+
+    * complete ``<script>``/``<style>`` blocks (content included) are removed;
+    * any remaining HTML/XML tag is removed (kills inline event handlers);
+    * control characters (except ``\\n`` and ``\\t``) and DEL are removed;
+    * runs of spaces/tabs collapse to a single space; leading/trailing
+      whitespace is stripped. Newlines are preserved for multi-line debriefs.
+
+    Args:
+        text: Raw comment text.
+
+    Returns:
+        Sanitized text safe to post upstream.
+    """
+    without_blocks = _SCRIPT_BLOCK_RE.sub(" ", text)
+    without_tags = _HTML_TAG_RE.sub(" ", without_blocks)
+    without_controls = _CONTROL_CHARS_RE.sub("", without_tags)
+    collapsed = _HORIZONTAL_WS_RE.sub(" ", without_controls)
+    return collapsed.strip()
 
 
 def redact_sensitive(text: str | None) -> str | None:
@@ -52,3 +108,60 @@ def redact_sensitive(text: str | None) -> str | None:
     text = _API_KEY_COLON_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED:EMAIL]", text)
     return text
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Return True if a mapping key names a secret-bearing field."""
+    return _SENSITIVE_KEY_RE.search(key) is not None
+
+
+def _redact_string(value: str) -> str | None:
+    """Redact a string value, recursing into embedded JSON when present.
+
+    A string whose stripped form starts with ``{`` or ``[`` is treated as
+    potential JSON: on a successful parse the parsed structure is redacted via
+    :func:`redact_structure` and re-serialized, so quoted JSON key/value pairs
+    (invisible to the legacy string regex) cannot leak secrets. Malformed
+    strings fall through to the prose path unchanged.
+    """
+    stripped = value.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            parsed = json.loads(stripped)
+        except ValueError:
+            return redact_sensitive(value)
+        if isinstance(parsed, (dict, list)):
+            return json.dumps(redact_structure(parsed))
+    return redact_sensitive(value)
+
+
+def redact_structure(value: Any) -> Any:
+    """Recursively redact secrets and PII from structured data.
+
+    Extends :func:`redact_sensitive` to structured payloads (dicts, lists) for
+    the audit path (#64):
+
+    * values stored under sensitive keys (``api_key``, ``token``, ...) are
+      replaced wholesale with ``[REDACTED]`` — the legacy string redaction
+      cannot catch JSON-style ``"api_key": "..."`` pairs on its own;
+    * every string value passes through :func:`_redact_string`, which recurses
+      into embedded JSON (``{"notes": "{\\"api_key\\": \\"...\\"}"``) before
+      applying the string redaction;
+    * non-string scalars (int, float, bool, None) are preserved.
+
+    Args:
+        value: Arbitrary structure (dict, list, str, or scalar).
+
+    Returns:
+        Structure of the same shape with sensitive content redacted.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED_PLACEHOLDER if _is_sensitive_key(str(key)) else redact_structure(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_structure(item) for item in value]
+    if isinstance(value, str):
+        return _redact_string(value)
+    return value
