@@ -277,6 +277,24 @@ async def test_nested_payload_secrets_redacted_end_to_end(audit_records):
     assert "[REDACTED]" in str(nested_comments)
 
 
+@pytest.mark.asyncio
+async def test_json_in_string_payload_secret_never_reaches_audit(audit_records):
+    """Secrets inside JSON-in-string arguments never reach the audit record (PR #88 F1)."""
+
+    @audit_tool_call
+    async def _json_tool(params: _AuditParams, ctx: MagicMock) -> str:
+        return "ok"
+
+    await _json_tool(
+        _AuditParams(athlete_id="0", description='{"api_key": "sk-e2e-1"}'),
+        MagicMock(),
+    )
+
+    output = "\n".join(record.getMessage() for record in audit_records)
+    assert "sk-e2e-1" not in output
+    assert "[REDACTED]" in output
+
+
 # ---------------------------------------------------------------------------
 # AC6 — stderr only, stdout stays clean
 # ---------------------------------------------------------------------------

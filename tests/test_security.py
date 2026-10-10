@@ -1,5 +1,7 @@
 """Security tests for secret/PII redaction and input validation hardening."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -340,8 +342,6 @@ def test_redact_structure_handles_plain_string_and_list():
 
 def test_redact_structure_json_serialized_sensitive_key():
     """A JSON-style payload with a sensitive key is redacted (audit leak vector)."""
-    import json
-
     payload = {"api_key": "sk-fake-json"}
     serialized = json.dumps(payload)
     # The legacy string redaction alone cannot catch JSON-style keys...
@@ -350,6 +350,94 @@ def test_redact_structure_json_serialized_sensitive_key():
     result = redact_structure(payload)
     assert "sk-fake-json" not in json.dumps(result)
     assert result["api_key"] == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# redact_structure — JSON-in-string redaction (PR #88 review finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_structure_redacts_json_in_string_value():
+    """A string value containing embedded JSON has its secrets redacted.
+
+    Reviewer repro: the #18 string redaction's colon regex requires
+    ``api_key:`` without an intervening quote, so the quoted JSON form
+    ``{"api_key": "..."}`` inside a string value used to survive.
+    """
+    payload = {"notes": '{"api_key": "sk-live-abc"}'}
+    result = redact_structure(payload)
+    assert "sk-live-abc" not in json.dumps(result)
+    assert result["notes"] == '{"api_key": "[REDACTED]"}'
+
+
+def test_redact_structure_redacts_json_in_string_inside_list():
+    """JSON-in-string elements inside a list are redacted recursively."""
+    payload = ["plain text", '{"token": "tok-nested-1"}']
+    result = redact_structure(payload)
+    assert "tok-nested-1" not in json.dumps(result)
+    assert result[0] == "plain text"
+    assert result[1] == '{"token": "[REDACTED]"}'
+
+
+def test_redact_structure_redacts_json_array_string():
+    """A string value holding a JSON array is parsed and redacted."""
+    payload = {"blob": '[{"api_key": "sk-arr-1"}, {"name": "safe"}]'}
+    result = redact_structure(payload)
+    assert "sk-arr-1" not in json.dumps(result)
+    assert result["blob"] == '[{"api_key": "[REDACTED]"}, {"name": "safe"}]'
+
+
+def test_redact_structure_malformed_json_string_passes_through_as_prose():
+    """A malformed JSON string is not mangled — it takes the prose path."""
+    original = '{"api_key": broken json here'
+    payload = {"notes": original}
+    result = redact_structure(payload)
+    assert result["notes"] == original
+
+
+def test_redact_structure_redacts_nested_json_in_string_within_json():
+    """JSON containing a nested JSON-in-string value is redacted recursively."""
+    payload = {"outer": '{"inner": {"api_key": "sk-deep-1"}}'}
+    result = redact_structure(payload)
+    assert "sk-deep-1" not in json.dumps(result)
+    assert result["outer"] == '{"inner": {"api_key": "[REDACTED]"}}'
+
+
+def test_redact_structure_top_level_json_string_redacted():
+    """A top-level JSON string gets the same JSON-in-string treatment."""
+    result = redact_structure('{"api_key": "sk-top-1"}')
+    assert "sk-top-1" not in result
+    assert result == '{"api_key": "[REDACTED]"}'
+
+
+# ---------------------------------------------------------------------------
+# redact_structure — generic *_key / bare key names (PR #88 review finding 2)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_structure_redacts_generic_key_suffix_names():
+    """Generic *_key and bare key names are redacted, including at nested depth."""
+    payload = {
+        "private_key": "pk-fake-1",
+        "access_key": "ak-fake-1",
+        "client_key": "ck-fake-1",
+        "key": "bare-fake-1",
+        "nested": {"ssh_key": "sk-fake-1", "keep": "visible"},
+    }
+    result = redact_structure(payload)
+    assert result["private_key"] == "[REDACTED]"
+    assert result["access_key"] == "[REDACTED]"
+    assert result["client_key"] == "[REDACTED]"
+    assert result["key"] == "[REDACTED]"
+    assert result["nested"]["ssh_key"] == "[REDACTED]"
+    assert result["nested"]["keep"] == "visible"
+
+
+def test_sensitive_key_pattern_does_not_match_embedded_words():
+    """Bare 'key' matching must not swallow ordinary words containing 'key'."""
+    payload = {"monkey": "see", "keyboard": "type", "hotkey": "press"}
+    result = redact_structure(payload)
+    assert result == payload
 
 
 # ---------------------------------------------------------------------------
