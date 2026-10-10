@@ -22,6 +22,8 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
+    IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -32,6 +34,7 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    project_wellness_days,
 )
 
 # ---------------------------------------------------------------------------
@@ -1250,3 +1253,268 @@ def test_list_workouts_input_folder_id_validation():
 
     with pytest.raises(ValidationError):
         ListWorkoutsInput(folder_id="../../etc/passwd")
+
+
+# ---------------------------------------------------------------------------
+# ICU Bounded Wellness Models (#84)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_wellness_input_default_dates(mock_date):
+    """Test IcuGetWellnessInput defaults to a 30-day window ending today."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    model = IcuGetWellnessInput()
+    assert model.oldest == "2026-09-10"
+    assert model.newest == "2026-10-10"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_wellness_input_explicit_dates_preserved(mock_date):
+    """Test IcuGetWellnessInput keeps an explicit in-bounds date range."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    model = IcuGetWellnessInput(oldest="2026-09-01", newest="2026-09-30")
+    assert model.oldest == "2026-09-01"
+    assert model.newest == "2026-09-30"
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_wellness_input_partial_override_oldest(mock_date):
+    """Test IcuGetWellnessInput fills newest from today when only oldest given."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    model = IcuGetWellnessInput(oldest="2026-10-01")
+    assert model.oldest == "2026-10-01"
+    assert model.newest == "2026-10-10"
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_wellness_input_clamps_oldest_to_90_day_span(mock_date):
+    """Binding condition 1: oldest is clamped server-side to a <=90-day span."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    model = IcuGetWellnessInput(oldest="2026-01-01", newest="2026-10-10")
+    # 2026-01-01 -> 2026-10-10 spans 282 days; clamped to newest - 90 days.
+    assert model.newest == "2026-10-10"
+    assert model.oldest == "2026-07-12"
+
+
+def test_icu_get_wellness_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted without clamping."""
+    model = IcuGetWellnessInput(oldest="2026-07-12", newest="2026-10-10")
+    assert model.oldest == "2026-07-12"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_wellness_input_rejects_oldest_after_newest():
+    """Test IcuGetWellnessInput rejects an inverted date range."""
+    with pytest.raises(ValidationError):
+        IcuGetWellnessInput(oldest="2026-10-10", newest="2026-01-01")
+
+
+def test_icu_get_wellness_input_rejects_impossible_calendar_dates():
+    """Test IcuGetWellnessInput rejects well-formed but impossible dates."""
+    with pytest.raises(ValidationError):
+        IcuGetWellnessInput(oldest="2026-02-30", newest="2026-10-10")
+
+
+def test_icu_get_wellness_input_rejects_bad_date_format():
+    """Test IcuGetWellnessInput rejects non-ISO date shapes."""
+    with pytest.raises(ValidationError):
+        IcuGetWellnessInput(oldest="01/02/2026", newest="2026-10-10")
+
+
+def test_icu_get_wellness_input_extra_forbid():
+    """Test IcuGetWellnessInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuGetWellnessInput(extra=True)  # type: ignore
+
+
+def test_wellness_day_projection_exposes_whitelist_only():
+    """Binding condition 2: projection drops every non-whitelisted ICU field."""
+    raw = {
+        "id": "2026-10-09",
+        "restingHR": 48,
+        "hrv": 62.5,
+        "weight": 70.2,
+        "sleepSecs": 28800,
+        "sleepQuality": 3,
+        "readiness": 88.0,
+        "soreness": 2,
+        "fatigue": 2,
+        "stress": 2,
+        "mood": 2,
+        "injury": 1,
+        "comments": "felt great",
+        "measurements": {"bp": "120/80"},
+        "ctl": 55.0,
+        "atl": 65.0,
+        "tsbRaw": -10.0,
+        "someUnknownIcuField": "leak-attempt",
+    }
+    projected = project_wellness_days([raw])
+    assert len(projected) == 1
+    dumped = projected[0].model_dump()
+    assert set(dumped.keys()) == {
+        "date",
+        "sleep_hours",
+        "hrv",
+        "soreness",
+        "fatigue",
+        "stress",
+        "readiness",
+        "ctl",
+        "atl",
+        "tsb",
+    }
+    assert dumped["date"] == "2026-10-09"
+    assert dumped["sleep_hours"] == 8.0
+    assert dumped["hrv"] == 62.5
+    assert dumped["readiness"] == 88.0
+    assert dumped["ctl"] == 55.0
+    assert dumped["atl"] == 65.0
+    # Never raw pass-through: non-whitelisted values are absent.
+    assert "weight" not in dumped
+    assert "restingHR" not in dumped
+    assert "mood" not in dumped
+    assert "injury" not in dumped
+    assert "comments" not in dumped
+    assert "measurements" not in dumped
+    assert "someUnknownIcuField" not in dumped
+
+
+def test_wellness_day_projection_derives_tsb_from_ctl_atl():
+    """TSB is derived server-side as ctl - atl."""
+    projected = project_wellness_days([{"id": "2026-10-09", "ctl": 55.0, "atl": 65.0}])
+    assert projected[0].tsb == -10.0
+
+
+def test_wellness_day_projection_tsb_none_when_load_missing():
+    """TSB is None when ctl or atl is absent."""
+    projected = project_wellness_days([{"id": "2026-10-09", "ctl": 55.0}])
+    assert projected[0].tsb is None
+
+
+def test_wellness_day_projection_missing_fields_are_none():
+    """Missing whitelisted fields project as None, never as raw defaults."""
+    projected = project_wellness_days([{"id": "2026-10-09"}])
+    day = projected[0]
+    assert day.sleep_hours is None
+    assert day.hrv is None
+    assert day.soreness is None
+    assert day.fatigue is None
+    assert day.stress is None
+    assert day.readiness is None
+    assert day.ctl is None
+    assert day.atl is None
+    assert day.tsb is None
+
+
+def test_wellness_day_projection_ignores_non_numeric_values():
+    """Non-numeric ICU values are dropped instead of passing through."""
+    projected = project_wellness_days(
+        [{"id": "2026-10-09", "hrv": "not-a-number", "readiness": True}]
+    )
+    day = projected[0]
+    assert day.hrv is None
+    assert day.readiness is None
+
+
+def test_project_wellness_days_empty():
+    """An empty ICU payload projects to an empty list."""
+    assert project_wellness_days([]) == []
+
+
+# ---------------------------------------------------------------------------
+# ICU Session Comment Models (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_icu_add_session_comment_input_defaults():
+    """Test IcuAddSessionCommentInput defaults to unconfirmed (write gate shut)."""
+    model = IcuAddSessionCommentInput(activity_id="i12345678", comment="Great effort today.")
+    assert model.confirmed is False
+    assert model.activity_id == "i12345678"
+
+
+def test_icu_add_session_comment_input_accepts_valid_comment():
+    """Test IcuAddSessionCommentInput accepts a confirmed, in-bounds comment."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678", comment="Solid debrief: 4x8min @ 300W, RPE 7.", confirmed=True
+    )
+    assert model.confirmed is True
+    assert "4x8min" in model.comment
+
+
+def test_icu_add_session_comment_input_rejects_comment_over_2000_chars():
+    """AC3: a comment body over 2000 characters is rejected at validation."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="x" * 2001)
+
+
+def test_icu_add_session_comment_input_accepts_2000_char_comment():
+    """A comment of exactly 2000 characters is accepted."""
+    model = IcuAddSessionCommentInput(activity_id="i12345678", comment="y" * 2000)
+    assert len(model.comment) == 2000
+
+
+def test_icu_add_session_comment_input_rejects_empty_comment():
+    """Test IcuAddSessionCommentInput rejects an empty comment."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="")
+
+
+def test_icu_add_session_comment_input_rejects_whitespace_only_comment():
+    """Test IcuAddSessionCommentInput rejects a whitespace-only comment."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="   ")
+
+
+def test_icu_add_session_comment_input_sanitizes_script_markup():
+    """Binding condition 4: script blocks are stripped, never passed through."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678",
+        comment="<script>alert('xss')</script>Great ride today.",
+    )
+    assert "<script>" not in model.comment
+    assert "alert('xss')" not in model.comment
+    assert "Great ride today." in model.comment
+
+
+def test_icu_add_session_comment_input_sanitizes_event_handler_markup():
+    """Binding condition 4: inline event-handler markup is stripped."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678",
+        comment="<img src=x onerror=alert(1)>Solid work.",
+    )
+    assert "<img" not in model.comment
+    assert "onerror" not in model.comment
+    assert "Solid work." in model.comment
+
+
+def test_icu_add_session_comment_input_strips_control_characters():
+    """Binding condition 4: control characters are removed from the comment."""
+    model = IcuAddSessionCommentInput(
+        activity_id="i12345678", comment="Good\u0007 session\u001b today."
+    )
+    assert "\u0007" not in model.comment
+    assert "\u001b" not in model.comment
+    assert "Good session today." in model.comment
+
+
+def test_icu_add_session_comment_input_rejects_comment_sanitizing_to_empty():
+    """A comment made only of markup is rejected instead of posting emptiness."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i12345678", comment="<script></script>")
+
+
+def test_icu_add_session_comment_input_rejects_bad_activity_id():
+    """Test IcuAddSessionCommentInput validates the activity id shape."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="../../etc/passwd", comment="ok")
+
+
+def test_icu_add_session_comment_input_extra_forbid():
+    """Test IcuAddSessionCommentInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuAddSessionCommentInput(activity_id="i1", comment="ok", extra=True)  # type: ignore

@@ -1322,3 +1322,158 @@ async def test_record_wellness_invalidates_wellness_cache():
         assert put_route.call_count == 1
 
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wellness transient error recovery (#84 AC4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_wellness_rate_limit_retry_then_success(client: IntervalsClient):
+    """Test wellness 429 rate limit triggers Retry-After retry and eventual success."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22")
+        route.side_effect = [
+            httpx.Response(429, headers={"Retry-After": "0.01"}),
+            httpx.Response(200, json=[{"id": "2026-08-22", "readiness": 88.0}]),
+        ]
+
+        data = await client.get_wellness("2026-08-01", "2026-08-22")
+        assert data[0]["readiness"] == 88.0
+        assert route.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_wellness_rate_limit_exhaustion(client: IntervalsClient):
+    """Test wellness 429 exhausts capped retries and raises IntervalsRateLimitError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.get("/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22").respond(
+            429,
+            headers={"Retry-After": "0.01"},
+            text="Rate limited",
+        )
+
+        with pytest.raises(IntervalsRateLimitError):
+            await client.get_wellness("2026-08-01", "2026-08-22")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_wellness_server_error_retry_then_success(client: IntervalsClient):
+    """Test wellness 5xx triggers exponential backoff retry and eventual success."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0/wellness?oldest=2026-08-01&newest=2026-08-22")
+        route.side_effect = [
+            httpx.Response(500, text="Internal Server Error"),
+            httpx.Response(200, json=[{"id": "2026-08-22", "readiness": 88.0}]),
+        ]
+
+        data = await client.get_wellness("2026-08-01", "2026-08-22")
+        assert data[0]["readiness"] == 88.0
+        assert route.call_count == 2
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Browser-like User-Agent (binding condition 7, epic #82)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_client_sends_browser_like_user_agent(client: IntervalsClient):
+    """Cloudflare sits in front of Intervals.icu: the client must present a
+    browser-like User-Agent, not a bot-style product token."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.get("/athlete/0").respond(200, json={"athlete": {"id": "0"}})
+        await client.get_athlete_profile()
+
+        request = route.calls.last.request
+        user_agent = request.headers.get("User-Agent", "")
+        assert user_agent.startswith("Mozilla/5.0")
+        assert "Chrome/" in user_agent
+        assert "Safari/" in user_agent
+        assert "Coach-MCP-Server" not in user_agent
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Activity chat messages (#85)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_success(client: IntervalsClient):
+    """Test posting a session comment sends a chat Message object body."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages").respond(
+            200,
+            json={"id": "m1", "activityId": "i123", "message": "Great debrief."},
+        )
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+
+        assert result["id"] == "m1"
+        assert route.call_count == 1
+        request = route.calls.last.request
+        assert json.loads(request.content) == {"message": "Great debrief."}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_rate_limit_retry_then_success(client: IntervalsClient):
+    """Test comment POST 429 triggers capped Retry-After retry and succeeds."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages")
+        route.side_effect = [
+            httpx.Response(429, headers={"Retry-After": "0.01"}),
+            httpx.Response(200, json={"id": "m1"}),
+        ]
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+        assert result["id"] == "m1"
+        assert route.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_rate_limit_exhaustion(client: IntervalsClient):
+    """Test comment POST 429 exhausts capped retries and raises IntervalsRateLimitError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.post("/activity/i123/messages").respond(
+            429,
+            headers={"Retry-After": "0.01"},
+            text="Rate limited",
+        )
+
+        with pytest.raises(IntervalsRateLimitError):
+            await client.add_activity_message("i123", "Great debrief.")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_server_error_retry_then_success(client: IntervalsClient):
+    """Test comment POST 5xx triggers backoff retry and eventual success."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/activity/i123/messages")
+        route.side_effect = [
+            httpx.Response(500, text="Internal Server Error"),
+            httpx.Response(200, json={"id": "m1"}),
+        ]
+
+        result = await client.add_activity_message("i123", "Great debrief.")
+        assert result["id"] == "m1"
+        assert route.call_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_activity_message_not_found(client: IntervalsClient):
+    """Test comment POST on an unknown activity raises IntervalsNotFoundError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.post("/activity/nope/messages").respond(404, text="Not found")
+
+        with pytest.raises(IntervalsNotFoundError):
+            await client.add_activity_message("nope", "Great debrief.")
+    await client.close()

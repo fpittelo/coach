@@ -21,7 +21,7 @@ import sys
 from collections.abc import Generator
 from contextlib import redirect_stdout
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -293,6 +293,71 @@ async def test_json_in_string_payload_secret_never_reaches_audit(audit_records):
     output = "\n".join(record.getMessage() for record in audit_records)
     assert "sk-e2e-1" not in output
     assert "[REDACTED]" in output
+
+
+@pytest.mark.asyncio
+async def test_session_comment_secret_never_reaches_audit(audit_records, monkeypatch):
+    """A secret embedded in the session-comment payload never reaches the
+    emitted audit record (#85 AC4, pattern of the #88 redaction tests)."""
+    from coach_mcp.models import IcuAddSessionCommentInput
+    from coach_mcp.server import icu_add_session_comment
+
+    monkeypatch.setattr(settings, "intervals_athlete_id", "0")
+
+    mock_client = MagicMock()
+    mock_client.add_activity_message = AsyncMock(return_value={"id": "m1"})
+    ctx = MagicMock()
+    ctx.request_context.lifespan_state = {"client": mock_client}
+
+    params = IcuAddSessionCommentInput(
+        activity_id="i123",
+        comment="Debrief done. Rotate api_key=sk-fake-e2e-9876 and email dev@example.com",
+        confirmed=True,
+    )
+    result = await icu_add_session_comment(params, ctx)
+
+    assert result.startswith("Successfully posted session comment")
+    assert len(audit_records) == 1
+    record = audit_records[0]
+    assert record.levelno == logging.INFO
+    entry = json.loads(record.getMessage())
+    assert entry["event"] == "tool_call"
+    assert entry["tool"] == "icu_add_session_comment"
+    assert entry["status"] == "success"
+    arguments = entry["arguments"]
+    assert isinstance(arguments, dict)
+    assert arguments["activity_id"] == "i123"
+    assert arguments["confirmed"] is True
+    output = record.getMessage()
+    assert "sk-fake-e2e-9876" not in output
+    assert "dev@example.com" not in output
+    assert "[REDACTED" in output
+
+
+@pytest.mark.asyncio
+async def test_session_comment_unconfirmed_rejection_audited_at_error(audit_records, monkeypatch):
+    """A confirmation-gate rejection is audited as a failed write (ERROR level)."""
+    from coach_mcp.models import IcuAddSessionCommentInput
+    from coach_mcp.server import icu_add_session_comment
+
+    monkeypatch.setattr(settings, "intervals_athlete_id", "0")
+
+    mock_client = MagicMock()
+    mock_client.add_activity_message = AsyncMock()
+    ctx = MagicMock()
+    ctx.request_context.lifespan_state = {"client": mock_client}
+
+    params = IcuAddSessionCommentInput(activity_id="i123", comment="Great debrief.")
+    result = await icu_add_session_comment(params, ctx)
+
+    assert result.startswith("Error")
+    mock_client.add_activity_message.assert_not_awaited()
+    assert len(audit_records) == 1
+    record = audit_records[0]
+    assert record.levelno == logging.ERROR
+    entry = json.loads(record.getMessage())
+    assert entry["status"] == "error"
+    assert entry["tool"] == "icu_add_session_comment"
 
 
 # ---------------------------------------------------------------------------

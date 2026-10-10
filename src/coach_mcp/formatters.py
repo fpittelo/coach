@@ -1,9 +1,12 @@
 """Formatters to render Intervals.icu data into structured JSON and agent-friendly Markdown."""
 
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from coach_mcp.models import ResponseFormat
+
+if TYPE_CHECKING:
+    from coach_mcp.models import WellnessDayProjection
 
 
 def to_json_str(data: Any) -> str:
@@ -219,6 +222,44 @@ def format_wellness_list(wellness_list: list[dict[str, Any]], fmt_json: bool = F
         )
 
     return "\n".join(lines)
+
+
+def format_icu_wellness(days: list["WellnessDayProjection"], fmt_json: bool = False) -> str:
+    """Format the bounded wellness whitelist projection (``icu_get_wellness``).
+
+    Both output shapes render the projected whitelist only — the raw ICU
+    payload is never surfaced (epic #82 binding security condition 2).
+    """
+    if fmt_json:
+        return to_json_str([day.model_dump() for day in days])
+
+    if not days:
+        return "No wellness records found for the requested period."
+
+    lines = [
+        f"# Bounded Wellness History ({len(days)} days)",
+        "",
+        "Health-field whitelist projection: sleep, HRV, soreness, fatigue, "
+        "stress, readiness, CTL, ATL (TSB = CTL - ATL).",
+        "",
+        "| Date | Sleep (h) | HRV (rMSSD) | Soreness | Fatigue | Stress | Readiness | CTL | ATL | TSB |",  # noqa: E501
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+
+    for day in days:
+        lines.append(
+            f"| {day.date} | {_fmt_num(day.sleep_hours)} | {_fmt_num(day.hrv)} | "
+            f"{_fmt_num(day.soreness)} | {_fmt_num(day.fatigue)} | {_fmt_num(day.stress)} | "
+            f"{_fmt_num(day.readiness)} | {_fmt_num(day.ctl)} | {_fmt_num(day.atl)} | "
+            f"{_fmt_num(day.tsb)} |"
+        )
+
+    return "\n".join(lines)
+
+
+def _fmt_num(value: float | None) -> str:
+    """Render a projected numeric value with one decimal, or '-' when absent."""
+    return f"{value:.1f}" if value is not None else "-"
 
 
 def _compute_fitness_metrics(wellness_entries: list[dict[str, Any]]) -> dict[str, Any]:

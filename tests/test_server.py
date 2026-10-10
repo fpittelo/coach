@@ -1,5 +1,6 @@
 """Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
+import json
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,7 @@ from coach_mcp.formatters import (
     format_events_list,
     format_fitness_summary,
     format_folders,
+    format_icu_wellness,
     format_power_curve,
     format_power_model,
     format_profile,
@@ -44,6 +46,8 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuAddSessionCommentInput,
+    IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -54,9 +58,12 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    project_wellness_days,
 )
 from coach_mcp.server import (
     _get_client_from_ctx,
+    icu_add_session_comment,
+    icu_get_wellness,
     intervals_create_activity,
     intervals_create_event,
     intervals_delete_activity,
@@ -144,6 +151,8 @@ def test_tools_registered():
         "intervals_delete_event",
         "intervals_list_folders",
         "intervals_list_workouts",
+        "icu_get_wellness",
+        "icu_add_session_comment",
     ]
 
     for expected in expected_tools:
@@ -920,6 +929,278 @@ async def test_intervals_get_readiness_dashboard_gather_api_error(mock_date, moc
 
     assert "Error fetching readiness dashboard" in result
     assert "Server error" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Bounded Wellness Tools (#84)
+# ---------------------------------------------------------------------------
+
+
+def _icu_wellness_raw_payload() -> list[dict[str, object]]:
+    """Raw ICU wellness payload including non-whitelisted exfiltration bait."""
+    return [
+        {
+            "id": "2026-10-09",
+            "restingHR": 444,
+            "hrv": 62.5,
+            "weight": 77.7,
+            "sleepSecs": 28800,
+            "sleepQuality": 3,
+            "readiness": 88.0,
+            "soreness": 2,
+            "fatigue": 2,
+            "stress": 1,
+            "mood": 3,
+            "injury": 1,
+            "comments": "secret-comment-text",
+            "measurements": {"bp": "120/80"},
+            "ctl": 55.0,
+            "atl": 65.0,
+        }
+    ]
+
+
+def test_format_icu_wellness_markdown():
+    """Test bounded wellness markdown table renders whitelisted fields only."""
+    days = project_wellness_days(_icu_wellness_raw_payload())
+    result = format_icu_wellness(days)
+
+    assert "# Bounded Wellness History (1 days)" in result
+    assert "2026-10-09" in result
+    assert "8.0" in result  # sleep hours derived from sleepSecs
+    assert "62.5" in result  # hrv
+    assert "88.0" in result  # readiness
+    assert "-10.0" in result  # TSB derived as ctl - atl
+    # Non-whitelisted raw values never surface.
+    assert "77.7" not in result  # weight
+    assert "444" not in result  # restingHR
+    assert "secret-comment-text" not in result  # comments
+
+
+def test_format_icu_wellness_json():
+    """Test bounded wellness JSON output is the whitelist projection."""
+    days = project_wellness_days(_icu_wellness_raw_payload())
+    result = format_icu_wellness(days, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed[0].keys()) == {
+        "date",
+        "sleep_hours",
+        "hrv",
+        "soreness",
+        "fatigue",
+        "stress",
+        "readiness",
+        "ctl",
+        "atl",
+        "tsb",
+    }
+    assert parsed[0]["tsb"] == -10.0
+    assert "77.7" not in result
+    assert "444" not in result
+
+
+def test_format_icu_wellness_empty():
+    """Test bounded wellness formatter handles an empty projection."""
+    result = format_icu_wellness(project_wellness_days([]))
+    assert "No wellness records" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_wellness_markdown(mock_ctx, mock_client):
+    """Test bounded wellness tool returns the whitelisted markdown table."""
+    mock_client.get_wellness = AsyncMock(return_value=_icu_wellness_raw_payload())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWellnessInput(oldest="2026-09-10", newest="2026-10-09")
+    result = await icu_get_wellness(params, mock_ctx)
+
+    assert "Bounded Wellness History" in result
+    assert "62.5" in result
+    assert "77.7" not in result
+    assert "444" not in result
+    assert "secret-comment-text" not in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-09-10", newest="2026-10-09", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_get_wellness_json_whitelist_only(mock_ctx, mock_client):
+    """Binding condition 2 (AC3): non-whitelisted ICU fields never appear in output."""
+    mock_client.get_wellness = AsyncMock(return_value=_icu_wellness_raw_payload())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWellnessInput(
+        oldest="2026-09-10", newest="2026-10-09", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_wellness(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed[0].keys()) == {
+        "date",
+        "sleep_hours",
+        "hrv",
+        "soreness",
+        "fatigue",
+        "stress",
+        "readiness",
+        "ctl",
+        "atl",
+        "tsb",
+    }
+    for banned in ("weight", "restingHR", "mood", "injury", "comments", "measurements"):
+        assert f'"{banned}"' not in result
+    assert "77.7" not in result
+    assert "secret-comment-text" not in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_wellness_clamps_wide_range_server_side(mock_date, mock_ctx, mock_client):
+    """Binding condition 1 (AC2): a >90-day span is clamped before the ICU call."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWellnessInput(oldest="2026-01-01", newest="2026-10-10")
+    await icu_get_wellness(params, mock_ctx)
+
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-07-12", newest="2026-10-10", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_wellness_default_dates(mock_date, mock_ctx, mock_client):
+    """Test bounded wellness tool computes a smart 30-day default window."""
+    mock_date.today.return_value = date(2026, 10, 10)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWellnessInput()
+    await icu_get_wellness(params, mock_ctx)
+
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-09-10", newest="2026-10-10", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_get_wellness_error(mock_ctx, mock_client):
+    """Test bounded wellness tool follows the handled error-string convention."""
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("wellness upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWellnessInput(oldest="2026-09-10", newest="2026-10-09")
+    result = await icu_get_wellness(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "wellness upstream down" in result
+
+
+def test_icu_get_wellness_read_only_annotation():
+    """Test the bounded wellness tool is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_wellness"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+# ---------------------------------------------------------------------------
+# ICU Session Comment Tool (#85)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_success(mock_ctx, mock_client):
+    """Test the confirmed write posts the sanitized comment exactly once."""
+    mock_client.add_activity_message = AsyncMock(
+        return_value={"id": "m1", "activityId": "i123", "message": "Great debrief."}
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(
+        activity_id="i123", comment="Great debrief: 4x8min @ 300W.", confirmed=True
+    )
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert "Successfully posted session comment" in result
+    assert "i123" in result
+    mock_client.add_activity_message.assert_awaited_once_with(
+        "i123", "Great debrief: 4x8min @ 300W."
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_requires_confirmation(mock_ctx, mock_client):
+    """Binding condition 1 (AC2): unconfirmed invocation is rejected server-side."""
+    mock_client.add_activity_message = AsyncMock()
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(activity_id="i123", comment="Great debrief.")
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "confirmation" in result
+    mock_client.add_activity_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_posts_sanitized_text(mock_ctx, mock_client):
+    """Binding condition 4: the posted text is the sanitized comment, never raw markup."""
+    mock_client.add_activity_message = AsyncMock(return_value={"id": "m1"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(
+        activity_id="i123",
+        comment="<script>alert('xss')</script>Clean debrief text.",
+        confirmed=True,
+    )
+    await icu_add_session_comment(params, mock_ctx)
+
+    sent_text = mock_client.add_activity_message.await_args.args[1]
+    assert "<script>" not in sent_text
+    assert "alert('xss')" not in sent_text
+    assert "Clean debrief text." in sent_text
+
+
+@pytest.mark.asyncio
+async def test_icu_add_session_comment_error(mock_ctx, mock_client):
+    """Test the write tool follows the handled error-string convention."""
+    mock_client.add_activity_message = AsyncMock(
+        side_effect=IntervalsAPIError("messages upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuAddSessionCommentInput(activity_id="i123", comment="Great debrief.", confirmed=True)
+    result = await icu_add_session_comment(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "messages upstream down" in result
+
+
+def test_icu_add_session_comment_annotations():
+    """AC8: a comment post is non-destructive and not idempotent."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_add_session_comment"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is False
+    assert annotation.destructive_hint is False
+    assert annotation.idempotent_hint is False
+
+
+def test_icu_add_session_comment_docstring_documents_contract():
+    """The docstring documents the validated-debrief-data contract (condition 4)."""
+    docstring = icu_add_session_comment.__doc__ or ""
+    assert "validated debrief data" in docstring
+    assert "raw-LLM" in docstring
+    assert "2000" in docstring
 
 
 # ---------------------------------------------------------------------------
