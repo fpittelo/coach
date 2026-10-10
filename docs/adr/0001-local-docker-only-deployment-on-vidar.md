@@ -72,7 +72,13 @@ Verified against coach-web's `COACH_MCP_IMAGE` defaults
 
 - Single source of deployment truth across the coach/coach-web pair; no
   divergent topologies to keep synchronized.
-- Biometric data (nLPD Art. 5(c)) never leaves the local host boundary.
+- **Storage residency:** the coaching stack stores biometric data
+  (nLPD Art. 5(c)) only on VIDAR. This does **not** change *processing*
+  residency: Intervals.icu remains an external processor (data origin and
+  cloud storage), and coach-web sends biometric context to OpenRouter
+  (US routing) — see coach-web `docs/security.md` and its OpenRouter
+  cross-border assessment (coach-web #112). Local-first reduces
+  storage-residency risk; it does not eliminate external processing.
 - No cloud cost, no IaC state to maintain, no cloud CI stages.
 - MCP endpoint exposure is internal-only (Docker network), which simplifies
   the security posture (#61 bearer auth becomes defense-in-depth, not a
@@ -86,6 +92,23 @@ Verified against coach-web's `COACH_MCP_IMAGE` defaults
   (`scripts/lane.sh`, `e2e-preflight.sh`); breaking changes there surface here.
 - No standalone local run mode is ratified; local development of `coach-mcp`
   in isolation relies on stdio transport or ad-hoc `docker run`.
+
+### Security consequences / accepted risks
+
+Accepted threats of the sidecar topology (STRIDE spot-check; the authoritative
+local STRIDE model is coach-web `docs/security.md` B1–B10 — this repo's arc42
+§8/§11 are deferred, so that document is the interim SSOT for threat modeling):
+
+| # | STRIDE | Threat | Compensating control |
+| :--- | :--- | :--- | :--- |
+| T1 | EoP / Info Disclosure | coach-web compromise (incl. LLM/MCP content prompt injection) → MCP write tools → full Intervals.icu account mutation | #82 condition 2 (write-confirmation gate); #61 bearer auth (sequenced — see below) |
+| T2 | Info Disclosure | `INTERVALS_API_KEY` env-var exposure (`docker inspect`, `/proc/<pid>/environ`) → full ICU account | #63 (Docker secrets `_FILE` pattern) + #82 condition 6 (per-lane env `chmod 600`, never logged, rotate on suspicion) — **residual until #63 lands**: the key is currently env-injected |
+| T3 | EoP | Container escape from any `coach-net` peer → host (biometric data, docker socket) | Container hardening in coach-web compose (`read_only`, `cap_drop: ALL`, `no-new-privileges`); docker-group membership remains root-equivalent (coach-web security.md B3) |
+| T4 | Spoofing | Any sibling container on `coach-net` impersonates coach-web toward `coach-mcp` (no transport auth) | #61 bearer auth — **sequencing condition: #61 must not slip past #82's write tools**; until then the #82 condition-2 write-confirmation gate is the interim control |
+
+Supply-chain note: the prod lane currently consumes `coach-mcp` by the mutable
+`:prod` tag while its sibling services are digest-pinned — a digest-pinning
+asymmetry tracked as a coach-web-side follow-up (their `compose.prod.yml`).
 
 **Neutral / follow-ups**
 

@@ -20,3 +20,7 @@
   before spec finalization (MADR-0008 routing).
 - Cross-repo decisions that affect the coach/coach-web pair reference the
   counterpart ADR in the table's *Consumer impact* column.
+- Until arc42 §8/§11 are authored in this repository, security reviews of
+  decisions reference the consumer's authoritative STRIDE model
+  ([coach-web `docs/security.md`](https://github.com/fpittelo/coach-web/blob/main/docs/security.md))
+  as the interim SSOT.
