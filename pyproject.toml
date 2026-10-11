@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
     "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.40.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +32,7 @@ dev = [
     "mypy>=1.10.0",
     "black>=24.0.0",
     "isort>=5.13.0",
+    "pip-audit>=2.7.0",
 ]
 
 [project.scripts]
