@@ -107,6 +107,26 @@ def emit_auth_failure(*, caller: str = ANONYMOUS_CALLER, detail: str = "") -> No
     emit_audit(logging.WARNING, entry)
 
 
+def emit_tool_batch_outcome(*, tool: str, outcomes: list[dict[str, Any]], status: str) -> None:
+    """Record per-item outcomes of an executed batch write tool (#94).
+
+    Batch write tools have no transactional rollback (epic #82 batch
+    semantics): partial success must be visible in the audit trail, never
+    silent. One ``batch_outcome`` entry is emitted per executed batch with
+    the per-item outcome list; the whole structure is redacted through the
+    #18 redaction layer before emission. ``status`` is ``success`` when no
+    item failed, ``error`` otherwise.
+    """
+    entry: dict[str, Any] = {
+        "timestamp": _utc_timestamp(),
+        "event": "batch_outcome",
+        "tool": tool,
+        "outcomes": redact_structure(outcomes),
+        "status": status,
+    }
+    emit_audit(logging.INFO if status == "success" else logging.ERROR, entry)
+
+
 def _find_ctx(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> Any:
     """Locate the MCP Context among invocation arguments, if any.
 

@@ -487,6 +487,42 @@ class IntervalsClient:
         await self._volatile_cache.invalidate_prefix(f"events:{target_id}:")
         return result
 
+    async def bulk_create_events(
+        self,
+        payloads: list[dict[str, Any]],
+        athlete_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Create/update multiple calendar events via POST athlete/{id}/events/bulk.
+
+        Verified against the official Intervals.icu OpenAPI spec
+        (``GET https://intervals.icu/api/v1/docs``, operation
+        ``createMultipleEvents``): the body is a JSON array of ``EventEx``
+        objects and the response is the array of resulting ``Event`` objects.
+
+        Upsert semantics (per-item ``external_id`` reconciliation, epic #82
+        PO decision 4a):
+
+        * ``upsert=true`` — update events with a matching ``external_id``
+          instead of creating new ones;
+        * ``upsertOnUid=false`` — uid-based upsert is ignored when
+          ``upsert=true`` but the parameter is required by the spec;
+        * ``updatePlanApplied=false`` — no ``plan_applied`` stamping (this is
+          a microcycle placement, not a plan-library application).
+
+        There is no transactional rollback: per-item reconciliation is owned
+        by the caller (``icu_batch_create_events`` outcome report).
+        """
+        target_id = self._resolve_athlete(athlete_id)
+        params = {"upsert": "true", "upsertOnUid": "false", "updatePlanApplied": "false"}
+        result = await self._request(
+            "POST",
+            f"athlete/{target_id}/events/bulk",
+            params=params,
+            json_data=payloads,
+        )
+        await self._volatile_cache.invalidate_prefix(f"events:{target_id}:")
+        return cast(list[dict[str, Any]], result)
+
     async def update_event(
         self,
         event_id: str,
