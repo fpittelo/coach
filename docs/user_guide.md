@@ -171,7 +171,14 @@ secrets:
 
 ## 4. Deployment Methods
 
-### 4.1 Local Python environment
+Coach MCP ships as OCI images to the [GitHub Container Registry](https://github.com/fpittelo/coach/pkgs/container/coach). Per [ADR 0001](adr/0001-local-docker-only-deployment-on-vidar.md), the only ratified deployment is **local-Docker-only on VIDAR**: the server runs as a sidecar container beside [coach-web](https://github.com/fpittelo/coach-web) on an internal Docker network, with no published host ports. Cloud or remote hosting is explicitly out of scope.
+
+Two ways to run the server:
+
+- **Local development (stdio)** — for working on the server itself; this is how the desktop clients in §5 connect.
+- **Production on VIDAR (sidecar)** — the coach-web lane topology consumes the published GHCR images. This repository publishes images only and keeps no compose stacks of its own.
+
+### 4.1 Local development (stdio)
 
 #### Using `uv` (recommended)
 
@@ -185,7 +192,7 @@ uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# Run the server
+# Run the server (stdio)
 INTERVALS_API_KEY="your_api_key" INTERVALS_ATHLETE_ID="0" coach-mcp
 ```
 
@@ -203,6 +210,16 @@ coach-mcp
 python -m coach_mcp.server
 ```
 
+#### Ad-hoc container run (optional)
+
+```bash
+docker build -t coach-mcp .
+docker run -i --rm \
+  -e INTERVALS_API_KEY="your_api_key" \
+  -e INTERVALS_ATHLETE_ID="0" \
+  coach-mcp
+```
+
 #### Verify the installation
 
 ```bash
@@ -213,122 +230,92 @@ ruff check .
 pytest -v --cov=src/coach_mcp tests/
 ```
 
-### 4.2 Docker container
+### 4.2 Production topology on VIDAR (sidecar, no host ports)
 
-Pre-built images are published to the GitHub Container Registry for every push to `dev`, every merged pull request to `qa` or `main`, and on-demand via `workflow_dispatch`:
+Production deployment is owned by the **coach-web lane topology** (see [ADR 0001](adr/0001-local-docker-only-deployment-on-vidar.md)). Each coach-web lane — `dev`, `qa`, `prod` — runs `coach-mcp` as a sidecar container alongside the lane's `coach-web` container:
 
-| Trigger | Tags |
+```mermaid
+graph LR
+    OWNER[Athlete browser<br/>loopback access]
+
+    subgraph VIDAR ["VIDAR host — coach-net Docker network"]
+        WEB[coach-web lane container]
+        MCP["coach-mcp sidecar<br/>(no published host port)"]
+    end
+
+    ICU[Intervals.icu REST API]
+
+    OWNER --> WEB
+    WEB -->|"COACH_MCP_URL=http://coach-mcp:8000/sse"| MCP
+    MCP -->|HTTPS| ICU
+```
+
+How it works:
+
+- **One host, loopback only.** Everything runs on VIDAR, the single personal host. The athlete reaches the stack through coach-web; nothing needs to be reachable from the internet.
+- **Internal Docker network.** The lane's containers share the `coach-net` Docker network. coach-web connects to the MCP endpoint at `COACH_MCP_URL=http://coach-mcp:8000/sse` (SSE transport).
+- **No published host ports.** `coach-mcp` listens on port 8000 *inside* the Docker network only — there is no `-p` / `ports:` mapping, so the MCP endpoint is unreachable from the host or the LAN. (Bearer auth via `COACH_MCP_AUTH_TOKEN` stays in place as defense-in-depth; see §3 for how the token is supplied.)
+- **Per-lane image tags.** The lanes pull `ghcr.io/fpittelo/coach:dev`, `:qa` and `:prod` respectively — see §4.3 for the full tag contract.
+- **Secrets.** `INTERVALS_API_KEY` and `COACH_MCP_AUTH_TOKEN` are injected as Docker secrets using the `_FILE` pattern — setup is covered in §3 (Docker secrets).
+- **Container hardening.** The lane compose runs the sidecar with `read_only: true`, `cap_drop: ALL` and `no-new-privileges:true`, as the non-root user `coach:coach` (`UID:GID 10001:10001`) baked into the image. Do not override the user to root.
+
+> **Note**: This repository intentionally ships no `compose.yaml` of its own — standalone compose stacks were superseded by ADR 0001. To run or restart the production stack, use the coach-web lane scripts.
+
+### 4.3 Updating production with a pinned digest
+
+Images are published to GHCR by the `deploy.yaml` workflow with this tag contract:
+
+| Trigger | GHCR tags |
 | :--- | :--- |
-| Push to `dev` | `ghcr.io/fpittelo/coach:dev`, `ghcr.io/fpittelo/coach:<sha>` |
-| PR merged to `qa` | `ghcr.io/fpittelo/coach:qa`, `ghcr.io/fpittelo/coach:<sha>` |
-| PR merged to `main` | `ghcr.io/fpittelo/coach:latest`, `ghcr.io/fpittelo/coach:prod`, `ghcr.io/fpittelo/coach:<sha>` |
-| `workflow_dispatch` | `ghcr.io/fpittelo/coach:<environment>`, `ghcr.io/fpittelo/coach:<sha>` (and `latest` for `prod`) |
+| Push to `dev` | `:dev`, `:<commit-sha>` |
+| Merge to `qa` | `:qa`, `:<commit-sha>` |
+| Merge to `main` or a `v*` release tag | `:prod`, `:latest`, `v*`, `:<commit-sha>` |
 
-#### Pull and run (stdio)
+`:prod` and `:latest` are **mutable**: they are pointers that move to whichever image the most recent release built. A **digest** (`@sha256:…`) is **immutable**: it always resolves to the exact image it was recorded for and can never be re-pointed.
 
-```bash
-docker pull ghcr.io/fpittelo/coach:latest
-
-docker run -i --rm \
-  -e INTERVALS_API_KEY="your_api_key" \
-  -e INTERVALS_ATHLETE_ID="0" \
-  ghcr.io/fpittelo/coach:latest
-```
-
-#### Run with Streamable HTTP / SSE
-
-```bash
-docker run -d --rm \
-  -p 8000:8000 \
-  -e MCP_TRANSPORT="streamable_http" \
-  -e MCP_PORT="8000" \
-  -e INTERVALS_API_KEY="your_api_key" \
-  -e INTERVALS_ATHLETE_ID="0" \
-  --name coach-mcp-server \
-  ghcr.io/fpittelo/coach:latest
-```
-
-#### Build locally
-
-```bash
-docker build -t coach-mcp .
-docker run -i --rm -e INTERVALS_API_KEY="your_api_key" coach-mcp
-```
-
-#### Security: non-root execution
-
-The container runs as an unprivileged user:
-
-```dockerfile
-RUN groupadd -g 10001 coach && \
-    useradd -u 10001 -g coach -s /bin/false -m -d /home/coach coach
-USER coach:coach
-```
-
-Do not override `USER` to `root` in production; doing so violates the OCI non-root security model.
-
-#### GHCR token permissions
-
-The `deploy.yaml` workflow authenticates to GHCR using the repository-scoped `GITHUB_TOKEN`. The workflow declares the minimum required permissions:
+For production, pin the digest so the running image can never change underneath you:
 
 ```yaml
-permissions:
-  contents: read
-  packages: write
+# coach-web prod lane (compose.prod.yml)
+services:
+  coach-mcp:
+    image: ghcr.io/fpittelo/coach@sha256:0123abcdef…
 ```
 
-- `contents: read` is required to check out the repository.
-- `packages: write` is required to push images to GHCR.
+#### Manual update procedure
 
-If you pull private GHCR images locally or in another workflow, use a Personal Access Token (PAT) or GitHub App token with the `read:packages` scope:
+1. **Look up the digest** of the release you want — inspect the `:prod` tag, or read it off the GHCR package page:
+
+   ```bash
+   docker buildx imagetools inspect ghcr.io/fpittelo/coach:prod
+   # → Digest: sha256:0123abcdef…
+   ```
+
+2. **Pull the pinned digest** (never the mutable tag):
+
+   ```bash
+   docker pull ghcr.io/fpittelo/coach@sha256:0123abcdef…
+   ```
+
+3. **Verify** that the local image carries exactly that digest:
+
+   ```bash
+   docker images --digests ghcr.io/fpittelo/coach
+   ```
+
+4. **Restart** the prod lane: point the coach-web prod lane compose at the new digest and restart the lane (coach-web's lane scripts gate the restart on container healthchecks).
+
+Because a digest is immutable, the prod lane keeps running exactly this image until you deliberately pin a new one — `:prod` and `:latest` moving on the registry never affects a pinned deployment.
+
+> **Supply-chain note**: Digest pinning is the image-level equivalent of the locked-dependency hygiene adopted for the Python supply chain (#105): what you verified is what you run.
+
+If the GHCR package is private, log in first with a token carrying the `read:packages` scope:
 
 ```bash
 echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin
 ```
 
 For public packages, no authentication is required to pull.
-
-### 4.3 Docker Compose
-
-Create a `compose.yaml` file next to your project:
-
-```yaml
-services:
-  coach-mcp:
-    image: ghcr.io/fpittelo/coach:latest
-    container_name: coach-mcp
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      - INTERVALS_API_KEY=${INTERVALS_API_KEY}
-      - INTERVALS_ATHLETE_ID=${INTERVALS_ATHLETE_ID:-0}
-      - INTERVALS_BASE_URL=${INTERVALS_BASE_URL:-https://intervals.icu/api/v1}
-      - MCP_TRANSPORT=${MCP_TRANSPORT:-streamable_http}
-      - MCP_HOST=${MCP_HOST:-0.0.0.0}
-      - MCP_PORT=${MCP_PORT:-8000}
-      - HTTP_TIMEOUT_SECONDS=${HTTP_TIMEOUT_SECONDS:-30.0}
-      - HTTP_MAX_RETRIES=${HTTP_MAX_RETRIES:-3}
-      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
-      - CACHE_TTL_VOLATILE_SECONDS=${CACHE_TTL_VOLATILE_SECONDS:-60}
-    read_only: true
-    tmpfs:
-      - /tmp
-    user: "10001:10001"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-```
-
-Start the service:
-
-```bash
-# Ensure .env exists with your variables
-docker compose up -d
-```
-
-For a read-only root filesystem, the image writes only to `/tmp` (if needed) and keeps the application in `/app`.
 
 ---
 

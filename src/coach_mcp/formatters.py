@@ -122,7 +122,8 @@ def format_activities_list(activities: list[dict[str, Any]], fmt_json: bool = Fa
         )
 
         lines.append(
-            f"| {date_str} | [{name}](id:{act_id}) | {act_type} | {dur_str} | {dist_km} | {avg_watts} | {avg_hr} | {load} |"  # noqa: E501
+            f"| {date_str} | [{_escape_md_cell(name)}](id:{act_id}) | {act_type} | {dur_str} "
+            f"| {dist_km} | {avg_watts} | {avg_hr} | {load} |"
         )
 
     return "\n".join(lines)
@@ -540,7 +541,8 @@ def format_events_list(events: list[dict[str, Any]], fmt_json: bool = False) -> 
         desc = (ev.get("description") or "").replace("\n", " ")[:40]
 
         lines.append(
-            f"| {date_str} | [{name}](id:{ev_id}) | {cat} | {sport} | {dur_str} | {load} | {desc} |"
+            f"| {date_str} | [{_escape_md_cell(name)}](id:{ev_id}) | {cat} | {sport} "
+            f"| {dur_str} | {load} | {_escape_md_cell(desc)} |"
         )
 
     return "\n".join(lines)
@@ -865,6 +867,11 @@ def format_power_curve(
         watts = point.get("watts", "-")
         wkg = point.get("wkg", "-")
         sport = point.get("sport", "-")
+        # Documented safe (#113): these cells carry only ICU-computed numeric
+        # series (duration/watts/wkg) and sport keys from Intervals.icu's fixed
+        # sport-type vocabulary — the same constrained class as `session.type`,
+        # which #90 deliberately left unescaped. No athlete free-text reaches
+        # this row, so `_escape_md_cell` is not required here (KIS).
         lines.append(f"| {duration} | {watts} | {wkg} | {sport} |")
 
     return "\n".join(lines)
