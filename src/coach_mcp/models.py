@@ -933,6 +933,289 @@ class IcuBatchEventOutcome(BaseToolModel):
 
 
 # ---------------------------------------------------------------------------
+# ICU Workout Compliance Models (#95)
+# ---------------------------------------------------------------------------
+
+#: Maximum date-range span (in days) the compliance read may cover per call.
+#: Epic #82 binding security condition 1 — same bound as the wellness read;
+#: per issue #95 AC1 a wider range is REJECTED with an explicit validation
+#: error (not clamped) before any network call.
+ICU_COMPLIANCE_MAX_SPAN_DAYS = 90
+
+#: Default look-back window (in days) — the weekly debrief cadence of the
+#: consuming story (coach-web Story 3.2).
+ICU_COMPLIANCE_DEFAULT_DAYS = 7
+
+
+class IcuGetWorkoutComplianceInput(BaseToolModel):
+    """Input parameters for the bounded planned-vs-executed compliance read.
+
+    The requested date range is validated server-side before any network
+    call: dates must be real calendar dates, ``oldest`` must be on or before
+    ``newest``, and the span is hard-capped at
+    :data:`ICU_COMPLIANCE_MAX_SPAN_DAYS` (90) days — wider ranges are
+    rejected with an explicit validation error (issue #95 AC1).
+    """
+
+    oldest: str | None = Field(
+        default=None,
+        description=(
+            "Oldest date (YYYY-MM-DD). Defaults to 7 days ago. Ranges wider "
+            "than 90 days are rejected server-side."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+    @model_validator(mode="after")
+    def _set_and_bound_dates(self) -> "IcuGetWorkoutComplianceInput":
+        """Apply smart defaults, validate calendar dates, and bound the span.
+
+        Raises:
+            ValueError: If either date is not a real calendar date, if
+                ``oldest`` is after ``newest``, or if the span exceeds the
+                90-day maximum.
+        """
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=ICU_COMPLIANCE_DEFAULT_DAYS)).isoformat()
+
+        newest_date = _parse_iso_date(self.newest, "newest")
+        oldest_date = _parse_iso_date(self.oldest, "oldest")
+        if oldest_date > newest_date:
+            raise ValueError("oldest must be on or before newest")
+
+        span_days = (newest_date - oldest_date).days
+        if span_days > ICU_COMPLIANCE_MAX_SPAN_DAYS:
+            raise ValueError(
+                f"date range spans {span_days} days, exceeding the "
+                f"{ICU_COMPLIANCE_MAX_SPAN_DAYS}-day maximum for compliance reads"
+            )
+        return self
+
+
+class WorkoutComplianceEvent(BaseToolModel):
+    """Whitelisted per-event adherence classification (``icu_get_workout_compliance``).
+
+    One planned WORKOUT calendar event joined to its executed activity via
+    the native ``paired_event_id`` link (never heuristic date/title
+    matching). ``compliance`` is Intervals.icu's own planned-vs-executed
+    score for the paired activity; ``structure_diff`` is the server-side
+    cross-check of the planned ``workout_doc`` structure against the
+    executed interval data.
+    """
+
+    event_id: str = Field(..., description="Planned calendar event ID.")
+    date: str = Field(..., description="Planned event date (YYYY-MM-DD).")
+    name: str = Field(..., description="Planned workout title.")
+    status: Literal["completed", "missed", "upcoming"] = Field(
+        ...,
+        description=(
+            "Adherence classification: completed (paired activity found), "
+            "missed (past event with no paired activity), upcoming (future "
+            "event, excluded from the adherence rate)."
+        ),
+    )
+    compliance: float | None = Field(
+        default=None,
+        description="Native Intervals.icu compliance score of the paired activity.",
+    )
+    structure_diff: Literal["match", "mismatch", "unavailable"] = Field(
+        ...,
+        description=(
+            "Per-interval diff of the planned workout_doc structure against "
+            "the executed interval data: match, mismatch, or unavailable "
+            "when either side carries no comparable structure."
+        ),
+    )
+
+
+class WorkoutComplianceReport(BaseToolModel):
+    """Whitelisted compliance report over a bounded date range.
+
+    Exposes only the adherence summary and per-event classifications — never
+    a raw pass-through of the executed activity payload (no biometric or
+    sensor values).
+    """
+
+    oldest: str = Field(..., description="Reported range start (YYYY-MM-DD).")
+    newest: str = Field(..., description="Reported range end (YYYY-MM-DD).")
+    total_planned: int = Field(
+        ..., description="Planned WORKOUT events counted for the adherence rate.", ge=0
+    )
+    completed: int = Field(..., description="Planned workouts with a paired activity.", ge=0)
+    missed: int = Field(..., description="Past planned workouts without a paired activity.", ge=0)
+    upcoming: int = Field(
+        ..., description="Future planned workouts (excluded from the rate).", ge=0
+    )
+    adherence_rate: float | None = Field(
+        default=None,
+        description=(
+            "Completed share of rateable planned workouts in percent "
+            "(0-100); None when no workout was rateable."
+        ),
+    )
+    events: list[WorkoutComplianceEvent] = Field(
+        default_factory=list, description="Per-event adherence classifications."
+    )
+
+
+def _planned_interval_count(workout_doc: Any) -> int | None:
+    """Best-effort work-interval count from a planned ``workout_doc``.
+
+    Compiled docs (a dict carrying a ``steps`` list) yield the step count.
+    DSL strings are not structurally parsed — a full DSL grammar is out of
+    scope — so they yield ``None`` and the diff reports ``unavailable``
+    instead of a guessed number.
+    """
+    if isinstance(workout_doc, dict):
+        steps = workout_doc.get("steps")
+        if isinstance(steps, list):
+            return len(steps)
+    return None
+
+
+def _executed_interval_count(interval_summary: Any) -> int | None:
+    """Executed interval count from the activity's ``interval_summary``."""
+    if isinstance(interval_summary, list) and interval_summary:
+        return len(interval_summary)
+    return None
+
+
+def _structure_diff(
+    planned_doc: Any,
+    executed_summary: Any,
+) -> Literal["match", "mismatch", "unavailable"]:
+    """Compare the planned workout structure against the executed intervals.
+
+    The diff is a count comparison: planned work steps extracted from the
+    compiled ``workout_doc`` versus the executed ``interval_summary`` entries
+    carried by the activity payload. Either side missing structure yields
+    ``unavailable`` — never a guessed verdict.
+    """
+    planned_count = _planned_interval_count(planned_doc)
+    executed_count = _executed_interval_count(executed_summary)
+    if planned_count is None or executed_count is None:
+        return "unavailable"
+    return "match" if planned_count == executed_count else "mismatch"
+
+
+def build_workout_compliance_report(
+    oldest: str,
+    newest: str,
+    events: list[dict[str, Any]],
+    activities: list[dict[str, Any]],
+    today: date | None = None,
+) -> WorkoutComplianceReport:
+    """Join planned events to executed activities into a compliance report.
+
+    This is the security boundary of the compliance read: every field not
+    present on :class:`WorkoutComplianceEvent` /
+    :class:`WorkoutComplianceReport` is discarded here, so raw activity
+    payload content (heart rate, power, sensor streams, unknown future
+    fields) can never reach tool output.
+
+    Join semantics (issue #95 AC2): an executed activity is paired with the
+    planned event whose integer ``id`` equals the activity's native
+    ``paired_event_id`` — never by date or title heuristics.
+
+    Args:
+        oldest: Reported range start (YYYY-MM-DD).
+        newest: Reported range end (YYYY-MM-DD).
+        events: Planned calendar events as returned by the ICU events list.
+        activities: Executed activities as returned by the ICU activities list.
+        today: Reference date for the upcoming/missed split; defaults to
+            the current date.
+
+    Returns:
+        The whitelisted compliance report with per-event classifications
+        and the summary adherence rate.
+    """
+    reference = today or date.today()
+
+    activities_by_event_id: dict[int, dict[str, Any]] = {}
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        paired = activity.get("paired_event_id")
+        if isinstance(paired, bool) or not isinstance(paired, int):
+            continue
+        activities_by_event_id[paired] = activity
+
+    classified: list[WorkoutComplianceEvent] = []
+    completed = 0
+    missed = 0
+    upcoming = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("category", "")).upper() != "WORKOUT":
+            continue
+        event_id = event.get("id")
+        if isinstance(event_id, bool) or not isinstance(event_id, int):
+            continue  # cannot join without the native numeric event id
+
+        paired_activity = activities_by_event_id.get(event_id)
+        event_date_str = str(event.get("start_date_local", ""))[:10]
+        try:
+            event_date = _parse_iso_date(event_date_str, "event date")
+        except ValueError:
+            event_date = None
+
+        if paired_activity is not None:
+            status: Literal["completed", "missed", "upcoming"] = "completed"
+            completed += 1
+        elif event_date is not None and event_date > reference:
+            status = "upcoming"
+            upcoming += 1
+        else:
+            status = "missed"
+            missed += 1
+
+        compliance = (
+            _numeric_or_none(paired_activity.get("compliance")) if paired_activity else None
+        )
+        executed_summary = paired_activity.get("interval_summary") if paired_activity else None
+        classified.append(
+            WorkoutComplianceEvent(
+                event_id=str(event_id),
+                date=event_date_str,
+                name=str(event.get("name", "Untitled")),
+                status=status,
+                compliance=compliance,
+                structure_diff=_structure_diff(event.get("workout_doc"), executed_summary),
+            )
+        )
+
+    total_planned = completed + missed
+    adherence_rate = round(completed / total_planned * 100.0, 1) if total_planned else None
+    return WorkoutComplianceReport(
+        oldest=oldest,
+        newest=newest,
+        total_planned=total_planned,
+        completed=completed,
+        missed=missed,
+        upcoming=upcoming,
+        adherence_rate=adherence_rate,
+        events=classified,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
 # ---------------------------------------------------------------------------
 

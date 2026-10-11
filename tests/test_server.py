@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import ValidationError
 
 from coach_mcp.client import (
     IntervalsAPIError,
@@ -29,6 +30,7 @@ from coach_mcp.formatters import (
     format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
+    format_workout_compliance,
     format_workouts,
     to_json_str,
 )
@@ -52,6 +54,7 @@ from coach_mcp.models import (
     IcuBatchCreateEventsInput,
     IcuEventDraft,
     IcuGetWellnessInput,
+    IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -62,6 +65,7 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    build_workout_compliance_report,
     project_wellness_days,
 )
 from coach_mcp.server import (
@@ -71,6 +75,7 @@ from coach_mcp.server import (
     icu_add_session_comment,
     icu_batch_create_events,
     icu_get_wellness,
+    icu_get_workout_compliance,
     intervals_create_activity,
     intervals_create_event,
     intervals_delete_activity,
@@ -161,6 +166,7 @@ def test_tools_registered():
         "icu_get_wellness",
         "icu_add_session_comment",
         "icu_batch_create_events",
+        "icu_get_workout_compliance",
     ]
 
     for expected in expected_tools:
@@ -2418,6 +2424,342 @@ def test_build_batch_event_payload_normalization():
     assert full["description"] == "3x10min @ 95%\n\n- 10m warmup\n3x\n- 10m 95%"
     assert full["moving_time"] == 3600
     assert full["icu_training_load"] == 90.0
+
+
+# ---------------------------------------------------------------------------
+# ICU Workout Compliance Tool (#95)
+# ---------------------------------------------------------------------------
+
+
+def _compliance_server_events() -> list[dict[str, Any]]:
+    """Planned-event fixture: two WORKOUT events and one NOTE."""
+    return [
+        {
+            "id": 101,
+            "name": "Tue VO2max",
+            "category": "WORKOUT",
+            "type": "Ride",
+            "start_date_local": "2026-10-06T08:00:00",
+            "moving_time": 3600,
+            "icu_training_load": 90,
+            "workout_doc": {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]},
+        },
+        {
+            "id": 102,
+            "name": "Thu Threshold",
+            "category": "WORKOUT",
+            "type": "Ride",
+            "start_date_local": "2026-10-08T08:00:00",
+            "moving_time": 3600,
+        },
+        {
+            "id": 103,
+            "name": "Rest-week note",
+            "category": "NOTE",
+            "type": "Ride",
+            "start_date_local": "2026-10-09T08:00:00",
+        },
+    ]
+
+
+def _compliance_server_activities() -> list[dict[str, Any]]:
+    """Executed-activity fixture with raw sensor values that must never leak."""
+    return [
+        {
+            "id": "a1",
+            "name": "Tue VO2max",
+            "type": "Ride",
+            "start_date_local": "2026-10-06T09:00:00",
+            "moving_time": 3500,
+            "paired_event_id": 101,
+            "compliance": 95.0,
+            "interval_summary": ["4m 115%", "3m 50%", "4m 115%"],
+            "average_heartrate": 150,
+            "average_watts": 250.0,
+        }
+    ]
+
+
+def _compliance_mock_client(mock_client: Any, mock_ctx: Any) -> None:
+    """Wire the mock client with the compliance fixtures."""
+    mock_client.list_events = AsyncMock(return_value=_compliance_server_events())
+    mock_client.list_activities = AsyncMock(return_value=_compliance_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+
+def test_format_workout_compliance_markdown():
+    """The markdown report leads with a layman-friendly adherence summary."""
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-11",
+        _compliance_server_events(),
+        _compliance_server_activities(),
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report)
+
+    assert "# Workout Compliance Report (2026-10-05 → 2026-10-11)" in result
+    assert "You planned 2 workout(s) and completed 1 — 50.0% adherence (1 missed)." in result
+    assert "| Tue VO2max |" in result
+    assert "completed" in result
+    assert "95.0" in result
+    assert "match" in result
+    assert "missed" in result
+    # The NOTE event is not classified.
+    assert "Rest-week note" not in result
+
+
+def test_format_workout_compliance_json():
+    """The JSON report is the whitelisted report model exactly."""
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-11",
+        _compliance_server_events(),
+        _compliance_server_activities(),
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    assert parsed["adherence_rate"] == 50.0
+    assert set(parsed["events"][0].keys()) == {
+        "event_id",
+        "date",
+        "name",
+        "status",
+        "compliance",
+        "structure_diff",
+    }
+
+
+def test_format_workout_compliance_empty():
+    """An empty report renders a plain no-data message."""
+    report = build_workout_compliance_report(
+        "2026-10-05", "2026-10-11", [], [], today=date(2026, 10, 11)
+    )
+    result = format_workout_compliance(report)
+    assert "No planned workouts found" in result
+
+
+def test_format_workout_compliance_all_upcoming():
+    """A report with only upcoming workouts says nothing is rateable yet."""
+    events = [_compliance_server_events()[0]]
+    events[0] = {**events[0], "start_date_local": "2026-10-20T08:00:00"}
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-25",
+        events,
+        [],
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report)
+    assert "nothing rateable yet" in result
+    assert "upcoming" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_markdown(mock_date, mock_ctx, mock_client):
+    """AC2: the tool returns the fixture-backed compliance report."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert "Workout Compliance Report" in result
+    assert "50.0% adherence" in result
+    assert "Tue VO2max" in result
+    assert "missed" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-10-05", newest="2026-10-11", athlete_id=None
+    )
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-05", newest="2026-10-11", athlete_id=None, limit=100
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC4: JSON output is whitelist-only — no raw activity payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(
+        oldest="2026-10-05", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    for banned in (
+        "average_heartrate",
+        "average_watts",
+        "paired_event_id",
+        "interval_summary",
+        "workout_doc",
+        "moving_time",
+    ):
+        assert f'"{banned}"' not in result
+    assert "250.0" not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_rejects_over_90_days_before_network(
+    mock_ctx, mock_client
+):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.list_events.assert_not_awaited()
+    mock_client.list_activities.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_empty_range(mock_date, mock_ctx, mock_client):
+    """AC5: an empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No planned workouts found" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_no_matching_events(mock_date, mock_ctx, mock_client):
+    """AC5: events exist but none is a WORKOUT -> structured empty result."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {
+                "id": 103,
+                "name": "Rest-week note",
+                "category": "NOTE",
+                "type": "Ride",
+                "start_date_local": "2026-10-09T08:00:00",
+            }
+        ]
+    )
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No planned workouts found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    _compliance_mock_client(mock_client, mock_ctx)
+    mock_client.list_events = AsyncMock(
+        side_effect=IntervalsAPIError("events upstream down", status_code=500)
+    )
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events upstream down" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_activities_error(mock_ctx, mock_client):
+    """A failure on the activities GET follows the same handled error path."""
+    _compliance_mock_client(mock_client, mock_ctx)
+    mock_client.list_activities = AsyncMock(
+        side_effect=IntervalsAPIError("activities upstream down", status_code=500)
+    )
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "activities upstream down" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_two_gets_contract(mock_date, mock_ctx, mock_client):
+    """Binding condition 5: exactly two GETs — no per-pair deep fetches."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    await icu_get_workout_compliance(params, mock_ctx)
+
+    mock_client.list_events.assert_awaited_once()
+    mock_client.list_activities.assert_awaited_once()
+    mock_client.get_activity.assert_not_awaited()
+    mock_client.get_activity_intervals.assert_not_awaited()
+    mock_client.get_event.assert_not_awaited()
+
+
+def test_icu_get_workout_compliance_read_only_annotation():
+    """The compliance read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_workout_compliance"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.build_workout_compliance_report",
+        side_effect=RuntimeError("unexpected join failure"),
+    ):
+        result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected join failure" in result
+
+
+def test_icu_get_workout_compliance_docstring_documents_join():
+    """The docstring documents the paired_event_id join and the 90-day bound."""
+    docstring = icu_get_workout_compliance.__doc__ or ""
+    assert "paired_event_id" in docstring
+    assert "compliance" in docstring
+    assert "90" in docstring
 
     doc_only = _build_batch_event_payload(
         IcuEventDraft(

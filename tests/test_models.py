@@ -1,6 +1,8 @@
 """Comprehensive tests for Pydantic v2 input validation models."""
 
+import json
 from datetime import date
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -27,6 +29,7 @@ from coach_mcp.models import (
     IcuBatchEventOutcome,
     IcuEventDraft,
     IcuGetWellnessInput,
+    IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -37,6 +40,8 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    WorkoutComplianceEvent,
+    build_workout_compliance_report,
     project_wellness_days,
 )
 
@@ -1709,3 +1714,361 @@ def test_icu_batch_event_outcome_model():
 
     with pytest.raises(ValidationError):
         IcuBatchEventOutcome(external_id="d", outcome="skipped")  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# ICU Workout Compliance Models (#95)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_workout_compliance_input_default_dates(mock_date):
+    """Test IcuGetWorkoutComplianceInput defaults to a 7-day debrief window."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetWorkoutComplianceInput()
+    assert model.oldest == "2026-10-04"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_workout_compliance_input_explicit_dates_preserved(mock_date):
+    """Test IcuGetWorkoutComplianceInput keeps an explicit in-bounds date range."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetWorkoutComplianceInput(oldest="2026-10-01", newest="2026-10-10")
+    assert model.oldest == "2026-10-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_workout_compliance_input_rejects_range_over_90_days():
+    """AC1: a range wider than 90 days is rejected with an explicit error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-01-01", newest="2026-10-11")
+    message = str(excinfo.value)
+    assert "90-day maximum" in message
+    assert "283" in message  # 2026-01-01 -> 2026-10-11 spans 283 days
+
+
+def test_icu_get_workout_compliance_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetWorkoutComplianceInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_workout_compliance_input_rejects_oldest_after_newest():
+    """An inverted range is rejected with the house error message."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-10-11", newest="2026-01-01")
+    assert "oldest must be on or before newest" in str(excinfo.value)
+
+
+def test_icu_get_workout_compliance_input_rejects_impossible_calendar_dates():
+    """Well-formed but impossible calendar dates are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_workout_compliance_input_rejects_bad_date_format():
+    """Non-ISO date shapes are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_workout_compliance_input_extra_forbid():
+    """Extra fields are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(extra=True)  # type: ignore
+
+
+def _compliance_event(
+    event_id: int,
+    date_str: str,
+    name: str = "Threshold",
+    category: str = "WORKOUT",
+    workout_doc: Any | None = None,
+) -> dict[str, Any]:
+    """Build a planned-event fixture shaped like an ICU EventEx."""
+    event: dict[str, Any] = {
+        "id": event_id,
+        "name": name,
+        "category": category,
+        "type": "Ride",
+        "start_date_local": f"{date_str}T08:00:00",
+        "moving_time": 3600,
+        "icu_training_load": 90,
+    }
+    if workout_doc is not None:
+        event["workout_doc"] = workout_doc
+    return event
+
+
+def _compliance_activity(
+    activity_id: str,
+    paired_event_id: int | None,
+    compliance: float | None = 95.0,
+    interval_summary: list[str] | None = None,
+    name: str = "Threshold",
+) -> dict[str, Any]:
+    """Build an executed-activity fixture shaped like an ICU Activity."""
+    activity: dict[str, Any] = {
+        "id": activity_id,
+        "name": name,
+        "type": "Ride",
+        "start_date_local": "2026-10-06T09:00:00",
+        "moving_time": 3500,
+        "average_heartrate": 150,
+        "average_watts": 250.0,
+    }
+    if paired_event_id is not None:
+        activity["paired_event_id"] = paired_event_id
+    if compliance is not None:
+        activity["compliance"] = compliance
+    if interval_summary is not None:
+        activity["interval_summary"] = interval_summary
+    return activity
+
+
+def test_build_workout_compliance_report_joins_via_paired_event_id():
+    """AC2: the join is by paired_event_id, never by title or date proximity.
+
+    Two identically-named events on adjacent dates; the executed activity is
+    paired with the SECOND event only. Heuristic date/title matching would
+    wrongly complete the first event.
+    """
+    events = [
+        _compliance_event(201, "2026-10-06", name="Threshold"),
+        _compliance_event(202, "2026-10-07", name="Threshold"),
+    ]
+    activities = [_compliance_activity("a1", paired_event_id=202)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    by_id = {event.event_id: event for event in report.events}
+    assert by_id["201"].status == "missed"
+    assert by_id["202"].status == "completed"
+    assert by_id["202"].compliance == 95.0
+    assert (report.completed, report.missed) == (1, 1)
+
+
+def test_build_workout_compliance_report_classifies_missed_event():
+    """A past planned workout without a paired activity is missed."""
+    events = [_compliance_event(301, "2026-10-06")]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "missed"
+    assert report.events[0].compliance is None
+    assert (report.completed, report.missed, report.upcoming) == (0, 1, 0)
+    assert report.adherence_rate == 0.0
+
+
+def test_build_workout_compliance_report_upcoming_event_excluded_from_rate():
+    """A future planned workout is upcoming, not missed, and not rate-counted."""
+    events = [
+        _compliance_event(401, "2026-10-06"),
+        _compliance_event(402, "2026-10-20"),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-20", events, [], today=date(2026, 10, 11)
+    )
+    by_id = {event.event_id: event for event in report.events}
+    assert by_id["401"].status == "missed"
+    assert by_id["402"].status == "upcoming"
+    assert (report.completed, report.missed, report.upcoming) == (0, 1, 1)
+    assert report.adherence_rate == 0.0  # denominator excludes the upcoming event
+
+
+def test_build_workout_compliance_report_structure_diff_match():
+    """AC3 (match): planned step count equals executed interval count."""
+    workout_doc = {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]}
+    events = [_compliance_event(501, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity(
+            "a1", paired_event_id=501, interval_summary=["4m 115%", "3m 50%", "4m 115%"]
+        )
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "match"
+
+
+def test_build_workout_compliance_report_structure_diff_mismatch():
+    """AC3 (mismatch): executed interval count differs from the planned steps."""
+    workout_doc = {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]}
+    events = [_compliance_event(502, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity("a2", paired_event_id=502, interval_summary=["4m 115%", "3m 50%"])
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "mismatch"
+
+
+def test_build_workout_compliance_report_structure_diff_unavailable_without_doc():
+    """AC3: a DSL-string workout_doc cannot be structurally diffed -> unavailable."""
+    events = [_compliance_event(503, "2026-10-06", workout_doc="- 10m warmup\n3x\n- 4m 115%")]
+    activities = [_compliance_activity("a3", paired_event_id=503, interval_summary=["4m 115%"])]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "unavailable"
+
+
+def test_build_workout_compliance_report_structure_diff_unavailable_without_intervals():
+    """AC3: an activity without interval data yields an unavailable diff."""
+    workout_doc = {"steps": [{"duration": 600}]}
+    events = [_compliance_event(504, "2026-10-06", workout_doc=workout_doc)]
+    activities = [_compliance_activity("a4", paired_event_id=504, interval_summary=None)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "unavailable"
+
+
+def test_build_workout_compliance_report_ignores_non_workout_events():
+    """Only WORKOUT-category events are classified; notes are not 'missed'."""
+    events = [
+        _compliance_event(601, "2026-10-06", category="NOTE"),
+        _compliance_event(602, "2026-10-07", category="WORKOUT"),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert [event.event_id for event in report.events] == ["602"]
+    assert (report.total_planned, report.missed) == (1, 1)
+
+
+def test_build_workout_compliance_report_empty_inputs():
+    """AC5: an empty range yields a structured empty report, not an error."""
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", [], [], today=date(2026, 10, 11)
+    )
+    assert report.total_planned == 0
+    assert report.completed == 0
+    assert report.missed == 0
+    assert report.upcoming == 0
+    assert report.adherence_rate is None
+    assert report.events == []
+
+
+def test_build_workout_compliance_report_no_matching_workout_events():
+    """AC5: events exist but none is a WORKOUT -> structured empty report."""
+    events = [_compliance_event(701, "2026-10-06", category="NOTE")]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert report.total_planned == 0
+    assert report.adherence_rate is None
+    assert report.events == []
+
+
+def test_build_workout_compliance_report_adherence_rate():
+    """The summary adherence rate is completed / (completed + missed) in percent."""
+    events = [
+        _compliance_event(801, "2026-10-06"),
+        _compliance_event(802, "2026-10-07"),
+        _compliance_event(803, "2026-10-08"),
+        _compliance_event(804, "2026-10-09"),
+    ]
+    activities = [_compliance_activity("a1", paired_event_id=801)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-09", events, activities, today=date(2026, 10, 11)
+    )
+    assert (report.completed, report.missed) == (1, 3)
+    assert report.adherence_rate == 25.0
+
+
+def test_build_workout_compliance_report_compliance_missing_is_none():
+    """A paired activity without a native compliance value projects None."""
+    events = [_compliance_event(901, "2026-10-06")]
+    activities = [_compliance_activity("a1", paired_event_id=901, compliance=None)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "completed"
+    assert report.events[0].compliance is None
+
+
+def test_workout_compliance_report_whitelist_only_fields():
+    """AC4: the report exposes whitelisted fields only — no raw activity dump."""
+    workout_doc = {"steps": [{"duration": 600}]}
+    events = [_compliance_event(1001, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity(
+            "a1",
+            paired_event_id=1001,
+            interval_summary=["4m 115%"],
+        )
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    dumped = report.model_dump()
+    assert set(dumped.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    assert set(dumped["events"][0].keys()) == {
+        "event_id",
+        "date",
+        "name",
+        "status",
+        "compliance",
+        "structure_diff",
+    }
+    # Raw activity payload values (HR, watts) never surface.
+    serialized = json.dumps(dumped)
+    assert "150" not in serialized
+    assert "250.0" not in serialized
+
+
+def test_workout_compliance_event_model_rejects_unknown_status():
+    """The per-event status is a closed literal set."""
+    with pytest.raises(ValidationError):
+        WorkoutComplianceEvent(
+            event_id="1",
+            date="2026-10-06",
+            name="X",
+            status="postponed",  # type: ignore
+            compliance=None,
+            structure_diff="unavailable",
+        )
+
+
+def test_build_workout_compliance_report_skips_malformed_payloads():
+    """Defensive guards: malformed events/activities are skipped, never crash."""
+    events = [
+        "not-a-dict",  # type: ignore[list-item]
+        _compliance_event("bad-id", "2026-10-06"),  # non-numeric event id
+        _compliance_event(1101, "2026-10-06"),
+    ]
+    activities = [
+        "not-a-dict",  # type: ignore[list-item]
+        _compliance_activity("a0", paired_event_id="not-an-int"),  # type: ignore[arg-item]
+        _compliance_activity("a1", paired_event_id=1101),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert [event.event_id for event in report.events] == ["1101"]
+    assert report.events[0].status == "completed"
+
+
+def test_build_workout_compliance_report_unparseable_event_date_is_missed():
+    """An event with an unparseable date cannot be upcoming; unpaired -> missed."""
+    event = _compliance_event(1201, "2026-10-06")
+    event["start_date_local"] = "not-a-timestamp"
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", [event], [], today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "missed"

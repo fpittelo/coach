@@ -30,6 +30,7 @@ from coach_mcp.formatters import (
     format_readiness_dashboard,
     format_sport_settings,
     format_wellness_list,
+    format_workout_compliance,
     format_workouts,
     to_json_str,
 )
@@ -55,6 +56,7 @@ from coach_mcp.models import (
     IcuBatchEventOutcome,
     IcuEventDraft,
     IcuGetWellnessInput,
+    IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -64,6 +66,7 @@ from coach_mcp.models import (
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    build_workout_compliance_report,
     project_wellness_days,
 )
 from coach_mcp.security import redact_sensitive
@@ -931,6 +934,68 @@ async def icu_batch_create_events(params: IcuBatchCreateEventsInput, ctx: Contex
             status="error",
         )
         return redact_sensitive(f"Error placing batch events: {exc}") or ""
+
+
+# ---------------------------------------------------------------------------
+# ICU Workout Compliance Tools (#95)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="icu_get_workout_compliance",
+    annotations=ToolAnnotations(
+        title="Get Workout Compliance (Planned vs Executed)",
+        read_only_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_get_workout_compliance(params: IcuGetWorkoutComplianceInput, ctx: Context) -> str:
+    """Compare planned calendar workouts against executed activities over a bounded range.
+
+    Serves coach-web Story 3.2 (weekly debrief adherence). The join is the
+    native Intervals.icu link: an executed activity carries ``paired_event_id``
+    pointing at its planned calendar event, plus ICU's own ``compliance``
+    adherence score — the join is by ID, never by date or title heuristics.
+
+    Exactly two GETs are issued per call (epic #82 binding condition 5), in
+    parallel: the planned events list and the executed activities list over
+    the requested range. The date range is bounded server-side to at most
+    90 days (binding condition 1) — wider ranges are rejected with an
+    explicit validation error before any network call.
+
+    The response is a whitelist-only projection: per-event adherence
+    classification (completed / missed / upcoming), the native compliance
+    score, and a per-interval structure diff of the planned ``workout_doc``
+    against the executed interval data — never a raw activity payload dump.
+
+    Args:
+        params (IcuGetWorkoutComplianceInput): Validated date range (defaults
+            to the last 7 days), optional athlete ID, and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Markdown report with a plain-language adherence summary and a
+        per-event table, or the JSON report model, or a handled ``Error ...``
+        string (audited at ERROR level).
+    """
+    client = _get_client_from_ctx(ctx)
+    oldest = cast(str, params.oldest)
+    newest = cast(str, params.newest)
+    try:
+        events, activities = await asyncio.gather(
+            client.list_events(oldest=oldest, newest=newest, athlete_id=params.athlete_id),
+            client.list_activities(
+                oldest=oldest, newest=newest, athlete_id=params.athlete_id, limit=100
+            ),
+        )
+        report = build_workout_compliance_report(oldest, newest, events, activities)
+        return format_workout_compliance(
+            report, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching workout compliance: {exc}") or ""
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching workout compliance: {exc}") or ""
 
 
 # ---------------------------------------------------------------------------
