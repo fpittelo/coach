@@ -1,7 +1,7 @@
 """Comprehensive tests for Pydantic v2 input validation models."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -30,8 +30,10 @@ from coach_mcp.models import (
     IcuBatchEventOutcome,
     IcuEventDraft,
     IcuGetCompletedSessionsInput,
+    IcuGetTrendsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
+    IcuTrendGranularity,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -43,6 +45,7 @@ from coach_mcp.models import (
     UpdateEventInput,
     WellnessRecordItem,
     WorkoutComplianceEvent,
+    build_trend_report,
     build_workout_compliance_report,
     project_completed_sessions,
     project_wellness_days,
@@ -2275,3 +2278,257 @@ def test_project_completed_sessions_skips_malformed_records():
 def test_project_completed_sessions_empty():
     """An empty ICU payload projects to an empty list."""
     assert project_completed_sessions([]) == []
+
+
+# ---------------------------------------------------------------------------
+# ICU Trends Models (#97)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_trends_input_default_dates(mock_date):
+    """Test IcuGetTrendsInput defaults to a 42-day window and weekly granularity."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetTrendsInput()
+    assert model.oldest == "2026-08-30"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.granularity == IcuTrendGranularity.WEEKLY
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_get_trends_input_explicit_dates_preserved():
+    """Test IcuGetTrendsInput keeps an explicit in-bounds date range."""
+    model = IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-10")
+    assert model.oldest == "2026-09-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_trends_input_rejects_range_over_90_days():
+    """AC1: a >90-day span is rejected with an explicit validation error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+
+
+def test_icu_get_trends_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetTrendsInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_trends_input_rejects_oldest_after_newest():
+    """Test IcuGetTrendsInput rejects an inverted date range."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-10-11", newest="2026-01-01")
+
+
+def test_icu_get_trends_input_rejects_impossible_calendar_dates():
+    """Test IcuGetTrendsInput rejects well-formed but impossible dates."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_trends_input_rejects_bad_date_format():
+    """Test IcuGetTrendsInput rejects non-ISO date shapes."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_trends_input_granularity_accepts_enum_values():
+    """AC4: defined enum values are accepted (member and raw string)."""
+    model = IcuGetTrendsInput(
+        oldest="2026-09-01", newest="2026-10-11", granularity=IcuTrendGranularity.DAILY
+    )
+    assert model.granularity == IcuTrendGranularity.DAILY
+
+    model_string = IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity="weekly")
+    assert model_string.granularity == IcuTrendGranularity.WEEKLY
+
+
+def test_icu_get_trends_input_granularity_rejects_unknown_value():
+    """AC4: values outside the enum are rejected with field-level errors."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity="monthly")
+    assert "granularity" in str(excinfo.value)
+
+
+def test_icu_get_trends_input_granularity_rejects_loose_boolean():
+    """#90 gating: a loose boolean is never a valid granularity."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity=True)
+
+
+def test_icu_get_trends_input_extra_forbid():
+    """Test IcuGetTrendsInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(extra=True)  # type: ignore
+
+
+def _trend_raw(**overrides: Any) -> dict[str, Any]:
+    """Raw ICU wellness payload including non-whitelisted exfiltration bait."""
+    record: dict[str, Any] = {
+        "id": "2026-10-10",
+        "ctl": 55.0,
+        "atl": 65.0,
+        "rampRate": 0.5,
+        "restingHR": 44,
+        "hrv": 62.5,
+        "weight": 70.2,
+        "sleepSecs": 28800,
+        "readiness": 88.0,
+        "comments": "secret-comment-text",
+        "someUnknownIcuField": "leak-attempt",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_build_trend_report_weekly_downsampling_keeps_bucket_last_day():
+    """AC2: weekly buckets keep the last available day's values per 7-day bucket."""
+    records = [
+        _trend_raw(id="2026-10-06", ctl=50.0, atl=60.0, rampRate=0.1),
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0, rampRate=0.2),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0, rampRate=0.5),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+
+    assert report.granularity == "weekly"
+    # newest = 2026-10-10; bucket 0 covers 2026-10-04..2026-10-10 -> last day 2026-10-10.
+    # bucket 1 covers 2026-09-27..2026-10-03 -> no records -> no point.
+    assert [point.date for point in report.points] == ["2026-10-10"]
+    assert report.points[0].ctl == 55.0
+    assert report.points[0].atl == 65.0
+    assert report.points[0].ramp_rate == 0.5
+
+
+def test_build_trend_report_tsb_derived_as_ctl_minus_atl():
+    """AC3: tsb is derived server-side as ctl - atl."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw()])
+    assert report.points[0].tsb == -10.0
+
+
+def test_build_trend_report_tsb_none_when_load_missing():
+    """tsb is None when ctl or atl is absent."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw(id="2026-10-10", atl=None)])
+    assert report.points[0].tsb is None
+    assert report.points[0].ctl == 55.0
+
+
+def test_build_trend_report_point_count_bound_at_max_window():
+    """AC2: a 90-day window yields at most 13 weekly points (and <=91 daily)."""
+    records = [
+        _trend_raw(id=(date(2026, 7, 13) + timedelta(days=offset)).isoformat(), ctl=50.0 + offset)
+        for offset in range(91)  # 2026-07-13 .. 2026-10-12 inclusive
+    ]
+    weekly = build_trend_report(
+        "2026-07-13", "2026-10-11", records, granularity=IcuTrendGranularity.WEEKLY
+    )
+    assert len(weekly.points) <= 13
+
+    daily = build_trend_report(
+        "2026-07-13", "2026-10-11", records, granularity=IcuTrendGranularity.DAILY
+    )
+    assert len(daily.points) <= 91
+
+
+def test_build_trend_report_daily_granularity_one_point_per_record():
+    """AC2: daily granularity keeps one point per available record day."""
+    records = [
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+    ]
+    report = build_trend_report(
+        "2026-10-01", "2026-10-10", records, granularity=IcuTrendGranularity.DAILY
+    )
+    assert [point.date for point in report.points] == ["2026-10-08", "2026-10-10"]
+
+
+def test_build_trend_report_snapshot_is_latest_record():
+    """The snapshot carries the most recent available daily values."""
+    records = [
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0, rampRate=0.2),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0, rampRate=0.5),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert report.snapshot is not None
+    assert report.snapshot.date == "2026-10-10"
+    assert report.snapshot.ctl == 55.0
+    assert report.snapshot.tsb == -10.0
+
+
+def test_build_trend_report_empty_records_structured_empty():
+    """An empty payload yields an empty series and no snapshot, not an error."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [])
+    assert report.points == []
+    assert report.snapshot is None
+
+
+def test_build_trend_report_exposes_whitelist_only():
+    """Binding condition 2: projection drops every non-whitelisted ICU field."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw()])
+    dumped = report.model_dump()
+    assert set(dumped.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert set(dumped["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert banned not in dumped["points"][0]
+        assert f'"{banned}"' not in json.dumps(dumped)
+
+
+def test_build_trend_report_ignores_non_numeric_values():
+    """Non-numeric ICU values are dropped instead of passing through."""
+    report = build_trend_report(
+        "2026-10-01",
+        "2026-10-10",
+        [_trend_raw(id="2026-10-10", ctl="not-a-number", rampRate=True)],
+    )
+    point = report.points[0]
+    assert point.ctl is None
+    assert point.ramp_rate is None
+    assert point.tsb is None
+
+
+def test_build_trend_report_skips_malformed_and_undatable_records():
+    """Defensive guards: malformed records and unparseable dates are skipped."""
+    records = [
+        "not-a-dict",  # type: ignore[list-item]
+        _trend_raw(id="not-a-date"),
+        _trend_raw(id="2026-10-10"),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert [point.date for point in report.points] == ["2026-10-10"]
+
+
+def test_build_trend_report_sorts_unsorted_input():
+    """Records arriving out of order are sorted before bucketing."""
+    records = [
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+        _trend_raw(id="2026-10-02", ctl=48.0, atl=58.0),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    # Weekly: bucket 0 (10-04..10-10) keeps 10-10; bucket 1 (09-27..10-03) keeps 10-02.
+    assert [point.date for point in report.points] == ["2026-10-02", "2026-10-10"]
+
+
+def test_build_trend_report_drops_records_outside_bounded_range():
+    """Defensive bound: records outside [oldest, newest] never enter the series."""
+    records = [
+        _trend_raw(id="2026-01-01", ctl=10.0, atl=20.0),  # far older than oldest
+        _trend_raw(id="2026-12-25", ctl=90.0, atl=95.0),  # beyond newest
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert [point.date for point in report.points] == ["2026-10-10"]

@@ -1416,6 +1416,222 @@ def project_completed_sessions(
 
 
 # ---------------------------------------------------------------------------
+# ICU Trends Models (#97)
+# ---------------------------------------------------------------------------
+
+#: Maximum date-range span (in days) the trends read may cover per call.
+#: Epic #82 binding security condition 1 — same bound as the wellness,
+#: compliance, and completed-sessions reads; per issue #97 AC1 a wider range
+#: is REJECTED with an explicit validation error (not clamped) before any
+#: network call.
+ICU_TRENDS_MAX_SPAN_DAYS = 90
+
+#: Default look-back window (in days) — six weeks, giving six weekly points
+#: for a meaningful trajectory by default.
+ICU_TRENDS_DEFAULT_DAYS = 42
+
+
+class IcuTrendGranularity(StrEnum):
+    """Aggregation granularity for ``icu_get_trends`` (issue #97 AC4).
+
+    Strict enum per #90 gating: values outside this enum are rejected at
+    validation with field-level errors — no loose strings or booleans.
+    """
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class IcuGetTrendsInput(BaseToolModel):
+    """Input parameters for the bounded fitness/fatigue trends read.
+
+    The requested date range is validated server-side before any network
+    call: dates must be real calendar dates, ``oldest`` must be on or before
+    ``newest``, and the span is hard-capped at
+    :data:`ICU_TRENDS_MAX_SPAN_DAYS` (90) days — wider ranges are rejected
+    with an explicit validation error (issue #97 AC1).
+    """
+
+    oldest: str | None = Field(
+        default=None,
+        description=(
+            "Oldest date (YYYY-MM-DD). Defaults to 42 days ago. Ranges wider "
+            "than 90 days are rejected server-side."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    granularity: IcuTrendGranularity = Field(
+        default=IcuTrendGranularity.WEEKLY,
+        description="Aggregation granularity: 'weekly' (default) or 'daily'.",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+    @model_validator(mode="after")
+    def _set_and_bound_dates(self) -> "IcuGetTrendsInput":
+        """Apply smart defaults, validate calendar dates, and bound the span.
+
+        Raises:
+            ValueError: If either date is not a real calendar date, if
+                ``oldest`` is after ``newest``, or if the span exceeds the
+                90-day maximum.
+        """
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=ICU_TRENDS_DEFAULT_DAYS)).isoformat()
+
+        newest_date = _parse_iso_date(self.newest, "newest")
+        oldest_date = _parse_iso_date(self.oldest, "oldest")
+        if oldest_date > newest_date:
+            raise ValueError("oldest must be on or before newest")
+
+        span_days = (newest_date - oldest_date).days
+        if span_days > ICU_TRENDS_MAX_SPAN_DAYS:
+            raise ValueError(
+                f"date range spans {span_days} days, exceeding the "
+                f"{ICU_TRENDS_MAX_SPAN_DAYS}-day maximum for trend reads"
+            )
+        return self
+
+
+class TrendPoint(BaseToolModel):
+    """Whitelisted single point of the fitness/fatigue trend series.
+
+    Epic #82 binding security condition 2: aggregate training-load fields
+    only — ctl, atl, tsb (derived server-side as ``ctl - atl``), and
+    rampRate. Never a raw pass-through of the wellness payload: no weight,
+    resting HR, HRV, sleep, mood, or any other health field reaches tool
+    output.
+    """
+
+    date: str = Field(..., description="Point date (YYYY-MM-DD).")
+    ctl: float | None = Field(default=None, description="Chronic training load (fitness).")
+    atl: float | None = Field(default=None, description="Acute training load (fatigue).")
+    tsb: float | None = Field(
+        default=None, description="Training stress balance (derived as ctl - atl)."
+    )
+    ramp_rate: float | None = Field(
+        default=None, description="ICU-provided CTL ramp rate for the day."
+    )
+
+
+class TrendReport(BaseToolModel):
+    """Whitelisted, point-bounded fitness/fatigue trend report.
+
+    ``points`` is the series downsampled to the requested granularity
+    (weekly buckets keep the last available day's values per 7-day bucket
+    ending at ``newest`` — at most 13 points for a 90-day window; daily
+    keeps one point per available record day, at most 91 for 90 days).
+    ``snapshot`` carries the most recent available daily values (None when
+    the range holds no data).
+    """
+
+    oldest: str = Field(..., description="Reported range start (YYYY-MM-DD).")
+    newest: str = Field(..., description="Reported range end (YYYY-MM-DD).")
+    granularity: str = Field(..., description="Applied aggregation granularity.")
+    points: list[TrendPoint] = Field(
+        default_factory=list, description="Downsampled trend series (ascending date)."
+    )
+    snapshot: TrendPoint | None = Field(
+        default=None, description="Most recent available daily values."
+    )
+
+
+def build_trend_report(
+    oldest: str,
+    newest: str,
+    records: list[dict[str, Any]],
+    granularity: IcuTrendGranularity = IcuTrendGranularity.WEEKLY,
+) -> TrendReport:
+    """Project raw wellness records into a bounded, downsampled trend report.
+
+    This is the security boundary for the trends read: every field not
+    present on :class:`TrendPoint` / :class:`TrendReport` is discarded here,
+    so raw wellness payload content (weight, resting HR, HRV, sleep, mood,
+    free-text comments, unknown future fields) can never reach tool output.
+
+    Downsampling (issue #97 AC2): ``daily`` keeps one point per available
+    record day; ``weekly`` groups records into 7-day buckets ending at
+    ``newest`` and keeps the last available day's values per bucket, so a
+    90-day window yields at most 13 points. Records outside
+    ``[oldest, newest]`` or without a parseable date are skipped, keeping
+    the point-count bound robust against unexpected upstream payloads.
+    ``tsb`` is derived server-side as ``ctl - atl``.
+
+    Args:
+        oldest: Reported range start (YYYY-MM-DD).
+        newest: Reported range end (YYYY-MM-DD).
+        records: Raw wellness records as returned by the ICU wellness list.
+        granularity: Aggregation granularity (weekly by default).
+
+    Returns:
+        The whitelisted trend report with the downsampled series and the
+        current snapshot (None when the range holds no data).
+    """
+    oldest_date = _parse_iso_date(oldest, "oldest")
+    newest_date = _parse_iso_date(newest, "newest")
+
+    daily: list[TrendPoint] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        date_str = str(record.get("id", ""))[:10]
+        try:
+            record_date = _parse_iso_date(date_str, "record date")
+        except ValueError:
+            continue
+        if record_date < oldest_date or record_date > newest_date:
+            continue
+        ctl = _numeric_or_none(record.get("ctl"))
+        atl = _numeric_or_none(record.get("atl"))
+        tsb = round(ctl - atl, 2) if ctl is not None and atl is not None else None
+        daily.append(
+            TrendPoint(
+                date=date_str,
+                ctl=ctl,
+                atl=atl,
+                tsb=tsb,
+                ramp_rate=_numeric_or_none(record.get("rampRate")),
+            )
+        )
+    daily.sort(key=lambda point: point.date)
+
+    if granularity == IcuTrendGranularity.DAILY:
+        points = daily
+    else:
+        # Bucket index counts 7-day windows backwards from newest (index 0 is
+        # the most recent bucket); daily is sorted ascending so the last
+        # write per bucket is its latest day. Iterating buckets in reverse
+        # index order yields the series in ascending date order.
+        buckets: dict[int, TrendPoint] = {}
+        for point in daily:
+            record_date = _parse_iso_date(point.date, "point date")
+            buckets[(newest_date - record_date).days // 7] = point
+        points = [buckets[index] for index in sorted(buckets, reverse=True)]
+
+    return TrendReport(
+        oldest=oldest,
+        newest=newest,
+        granularity=granularity.value,
+        points=points,
+        snapshot=daily[-1] if daily else None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
 # ---------------------------------------------------------------------------
 

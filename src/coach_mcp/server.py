@@ -30,6 +30,7 @@ from coach_mcp.formatters import (
     format_profile,
     format_readiness_dashboard,
     format_sport_settings,
+    format_trend_report,
     format_wellness_list,
     format_workout_compliance,
     format_workouts,
@@ -58,6 +59,7 @@ from coach_mcp.models import (
     IcuBatchEventOutcome,
     IcuEventDraft,
     IcuGetCompletedSessionsInput,
+    IcuGetTrendsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
@@ -69,6 +71,7 @@ from coach_mcp.models import (
     ResponseFormat,
     UpdateActivityInput,
     UpdateEventInput,
+    build_trend_report,
     build_workout_compliance_report,
     project_completed_sessions,
     project_wellness_days,
@@ -1075,6 +1078,75 @@ async def icu_get_completed_sessions(params: IcuGetCompletedSessionsInput, ctx: 
         return redact_sensitive(f"Error fetching completed sessions: {exc}") or ""
     except Exception as exc:  # noqa: BLE001
         return redact_sensitive(f"Error fetching completed sessions: {exc}") or ""
+
+
+# ---------------------------------------------------------------------------
+# ICU Trends Tools (#97)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="icu_get_trends",
+    annotations=ToolAnnotations(
+        title="Get Fitness & Fatigue Trends (Bounded Aggregates)",
+        read_only_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_get_trends(params: IcuGetTrendsInput, ctx: Context) -> str:
+    """Read bounded fitness/fatigue/form trend aggregates over a date range.
+
+    Serves coach-web Epic 4 (longitudinal memory): trajectory data so
+    planning conversations reason from trends, not single-day snapshots.
+    Read-only; closes out the epic #82 tool set.
+
+    Exactly one GET is issued per call against the verified Intervals.icu
+    endpoint ``GET /api/v1/athlete/{id}/wellness`` (official OpenAPI spec,
+    operation ``listWellnessRecords``; query params ``oldest``, ``newest``)
+    — the only spec operation providing the ctl/atl/rampRate series. The
+    date range is bounded server-side to at most 90 days (epic #82 binding
+    condition 1) — wider ranges are rejected with an explicit validation
+    error before any network call.
+
+    The response is a whitelist-only aggregate projection: per-point ctl,
+    atl, tsb (derived server-side as ctl - atl), and rampRate — never a raw
+    wellness payload dump (no weight, resting HR, HRV, sleep, or other
+    health values). The series is downsampled to the requested granularity
+    (weekly by default: the last available day's values per 7-day bucket,
+    at most 13 points for a 90-day window; daily: one point per available
+    record day) and a current snapshot is included.
+
+    Args:
+        params (IcuGetTrendsInput): Validated date range (defaults to the
+            last 42 days), optional athlete ID, aggregation granularity,
+            and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Markdown report with a plain-language trend direction and the
+        structured series, or the JSON report model, or a handled
+        ``Error ...`` string (audited at ERROR level).
+    """
+    client = _get_client_from_ctx(ctx)
+    oldest = cast(str, params.oldest)
+    newest = cast(str, params.newest)
+    try:
+        records = await client.get_wellness(
+            oldest=oldest,
+            newest=newest,
+            athlete_id=params.athlete_id,
+        )
+        report = build_trend_report(
+            oldest,
+            newest,
+            records,
+            granularity=params.granularity,
+        )
+        return format_trend_report(report, fmt_json=(params.response_format == ResponseFormat.JSON))
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching fitness trends: {exc}") or ""
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching fitness trends: {exc}") or ""
 
 
 # ---------------------------------------------------------------------------

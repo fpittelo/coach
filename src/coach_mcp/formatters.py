@@ -8,6 +8,7 @@ from coach_mcp.models import ResponseFormat
 if TYPE_CHECKING:
     from coach_mcp.models import (
         CompletedSessionsPage,
+        TrendReport,
         WellnessDayProjection,
         WorkoutComplianceReport,
     )
@@ -662,6 +663,77 @@ def format_completed_sessions(page: "CompletedSessionsPage", fmt_json: bool = Fa
             f"| {session.date} | [{session.title}](id:{session.id}) | {session.type} "
             f"| {duration} | {load} |"
         )
+    return "\n".join(lines)
+
+
+def _trend_direction_phrase(delta: float) -> str:
+    """Plain-language CTL direction phrase for a first → last delta."""
+    if delta >= 5:
+        return "rising steadily"
+    if delta > 2:
+        return "rising slightly"
+    if delta < -5:
+        return "declining steadily"
+    if delta < -2:
+        return "declining slightly"
+    return "holding steady"
+
+
+def format_trend_report(report: "TrendReport", fmt_json: bool = False) -> str:
+    """Format the bounded fitness/fatigue trend report (``icu_get_trends``).
+
+    Both output shapes render the whitelisted report only — the raw wellness
+    payload is never surfaced (epic #82 binding security condition 2). The
+    markdown shape leads with a plain-language trend direction and the
+    current form status alongside the structured series.
+    """
+    if fmt_json:
+        return to_json_str(report.model_dump())
+
+    if report.snapshot is None:
+        return f"No fitness data found for {report.oldest} → {report.newest}."
+
+    lines: list[str] = [
+        f"# Fitness & Fatigue Trends ({report.oldest} → {report.newest})",
+        "",
+    ]
+
+    ctl_values = [point.ctl for point in report.points if point.ctl is not None]
+    if len(ctl_values) >= 2:
+        direction = _trend_direction_phrase(ctl_values[-1] - ctl_values[0])
+        lines.append(
+            f"Fitness (CTL) {direction}: {ctl_values[0]:.1f} → {ctl_values[-1]:.1f} "
+            "over the period."
+        )
+    if report.snapshot.tsb is not None:
+        lines.append(
+            f"Form (TSB) currently {report.snapshot.tsb:.1f} — {_form_status(report.snapshot.tsb)}."
+        )
+    lines.append("")
+
+    lines.extend(
+        [
+            "| Date | Fitness (CTL) | Fatigue (ATL) | Form (TSB) | Ramp Rate |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for point in report.points:
+        lines.append(
+            f"| {point.date} | {_fmt_num(point.ctl)} | {_fmt_num(point.atl)} | "
+            f"{_fmt_num(point.tsb)} | {_fmt_num(point.ramp_rate)} |"
+        )
+
+    snapshot = report.snapshot
+    lines.extend(
+        [
+            "",
+            (
+                f"Current snapshot ({snapshot.date}): CTL {_fmt_num(snapshot.ctl)}, "
+                f"ATL {_fmt_num(snapshot.atl)}, TSB {_fmt_num(snapshot.tsb)}, "
+                f"ramp rate {_fmt_num(snapshot.ramp_rate)}."
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 

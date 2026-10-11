@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,6 +30,7 @@ from coach_mcp.formatters import (
     format_profile,
     format_readiness_dashboard,
     format_sport_settings,
+    format_trend_report,
     format_wellness_list,
     format_workout_compliance,
     format_workouts,
@@ -57,8 +58,10 @@ from coach_mcp.models import (
     IcuBatchCreateEventsInput,
     IcuEventDraft,
     IcuGetCompletedSessionsInput,
+    IcuGetTrendsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
+    IcuTrendGranularity,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -69,6 +72,7 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    build_trend_report,
     build_workout_compliance_report,
     project_completed_sessions,
     project_wellness_days,
@@ -80,6 +84,7 @@ from coach_mcp.server import (
     icu_add_session_comment,
     icu_batch_create_events,
     icu_get_completed_sessions,
+    icu_get_trends,
     icu_get_wellness,
     icu_get_workout_compliance,
     intervals_create_activity,
@@ -174,6 +179,7 @@ def test_tools_registered():
         "icu_batch_create_events",
         "icu_get_workout_compliance",
         "icu_get_completed_sessions",
+        "icu_get_trends",
     ]
 
     for expected in expected_tools:
@@ -3135,3 +3141,301 @@ async def test_icu_get_completed_sessions_unexpected_error(mock_date, mock_ctx, 
 
     assert result.startswith("Error")
     assert "unexpected projection failure" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Trends Tool (#97)
+# ---------------------------------------------------------------------------
+
+
+def _trends_server_records() -> list[dict[str, Any]]:
+    """Wellness fixture with ctl/atl/rampRate plus non-whitelisted bait."""
+    base = [
+        ("2026-09-13", 48.0, 56.0, 0.0),
+        ("2026-09-20", 50.0, 58.0, 0.1),
+        ("2026-09-27", 52.0, 60.0, 0.2),
+        ("2026-10-04", 55.0, 63.0, 0.3),
+        ("2026-10-11", 58.0, 61.0, 0.4),
+    ]
+    return [
+        {
+            "id": day,
+            "ctl": ctl,
+            "atl": atl,
+            "rampRate": ramp,
+            "restingHR": 44,
+            "hrv": 62.5,
+            "weight": 70.2,
+            "sleepSecs": 28800,
+            "readiness": 88.0,
+            "comments": "secret-comment-text",
+        }
+        for day, ctl, atl, ramp in base
+    ]
+
+
+def _trends_mock_client(mock_client: Any, mock_ctx: Any) -> None:
+    """Wire the mock client with the trends fixture."""
+    mock_client.get_wellness = AsyncMock(return_value=_trends_server_records())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+
+def test_format_trend_report_markdown():
+    """The markdown report leads with a plain-language trend direction."""
+    report = build_trend_report("2026-09-06", "2026-10-11", _trends_server_records())
+    result = format_trend_report(report)
+
+    assert "# Fitness & Fatigue Trends (2026-09-06 → 2026-10-11)" in result
+    assert "Fitness (CTL) rising steadily: 48.0 → 58.0 over the period." in result
+    assert "| 2026-09-13 | 48.0 | 56.0 | -8.0 | 0.0 |" in result
+    assert "| 2026-10-11 | 58.0 | 61.0 | -3.0 | 0.4 |" in result
+    assert "Current snapshot (2026-10-11)" in result
+    # Raw health values never surface.
+    assert "44" not in result.replace("2026", "")  # restingHR
+    assert "62.5" not in result  # hrv
+    assert "70.2" not in result  # weight
+    assert "secret-comment-text" not in result
+
+
+def test_format_trend_report_json_whitelist_only():
+    """The JSON report is the whitelisted report model exactly."""
+    report = build_trend_report("2026-09-06", "2026-10-11", _trends_server_records())
+    result = format_trend_report(report, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert parsed["granularity"] == "weekly"
+    assert set(parsed["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    assert parsed["snapshot"]["date"] == "2026-10-11"
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert f'"{banned}"' not in result
+
+
+def test_format_trend_report_empty():
+    """An empty report renders a plain no-data message (structured empty)."""
+    report = build_trend_report("2026-09-06", "2026-10-11", [])
+    result = format_trend_report(report)
+    assert "No fitness data found" in result
+
+
+def test_format_trend_report_single_point_has_no_direction_claim():
+    """With fewer than two CTL values no trend direction is claimed."""
+    report = build_trend_report("2026-10-01", "2026-10-11", [_trends_server_records()[-1]])
+    result = format_trend_report(report)
+    assert "rising" not in result
+    assert "declining" not in result
+    assert "Current snapshot (2026-10-11)" in result
+
+
+@pytest.mark.parametrize(
+    ("first_ctl", "last_ctl", "expected_phrase"),
+    [
+        (50.0, 58.0, "rising steadily"),
+        (50.0, 53.0, "rising slightly"),
+        (50.0, 51.0, "holding steady"),
+        (50.0, 47.0, "declining slightly"),
+        (50.0, 44.0, "declining steadily"),
+    ],
+)
+def test_format_trend_report_direction_phrases(first_ctl, last_ctl, expected_phrase):
+    """Every CTL delta band maps to its plain-language direction phrase."""
+    records = [
+        {"id": "2026-10-10", "ctl": first_ctl, "atl": first_ctl + 10.0},
+        {"id": "2026-10-11", "ctl": last_ctl, "atl": last_ctl + 10.0},
+    ]
+    report = build_trend_report(
+        "2026-10-01",
+        "2026-10-11",
+        records,
+        granularity=IcuTrendGranularity.DAILY,
+    )
+    result = format_trend_report(report)
+    assert f"Fitness (CTL) {expected_phrase}" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_markdown(mock_date, mock_ctx, mock_client):
+    """AC2/AC3: the tool returns the downsampled whitelisted trend report."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert "Fitness & Fatigue Trends" in result
+    assert "rising steadily" in result
+    assert "secret-comment-text" not in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-09-06", newest="2026-10-11", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC3: JSON output is whitelist-only — no raw wellness payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(
+        oldest="2026-09-06", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert set(parsed["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert f'"{banned}"' not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_trends_rejects_over_90_days_before_network(mock_ctx, mock_client):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    _trends_mock_client(mock_client, mock_ctx)
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.get_wellness.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_weekly_point_bound_at_max_window(mock_date, mock_ctx, mock_client):
+    """AC2: at the 90-day max window the weekly series stays within 13 points."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    records = [
+        {
+            "id": (date(2026, 7, 13) + timedelta(days=offset)).isoformat(),
+            "ctl": 50.0 + offset,
+            "atl": 60.0,
+            "rampRate": 0.1,
+        }
+        for offset in range(91)
+    ]
+    mock_client.get_wellness = AsyncMock(return_value=records)
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetTrendsInput(
+        oldest="2026-07-13", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert len(parsed["points"]) <= 13
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_daily_granularity_passthrough(mock_date, mock_ctx, mock_client):
+    """AC4: an explicit daily granularity is honored end-to-end."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(
+        oldest="2026-09-06",
+        newest="2026-10-11",
+        granularity=IcuTrendGranularity.DAILY,
+        response_format=ResponseFormat.JSON,
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert parsed["granularity"] == "daily"
+    assert [point["date"] for point in parsed["points"]] == [
+        "2026-09-13",
+        "2026-09-20",
+        "2026-09-27",
+        "2026-10-04",
+        "2026-10-11",
+    ]
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_empty_range(mock_date, mock_ctx, mock_client):
+    """An empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No fitness data found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_trends_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    _trends_mock_client(mock_client, mock_ctx)
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("wellness upstream down", status_code=500)
+    )
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "wellness upstream down" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.build_trend_report",
+        side_effect=RuntimeError("unexpected trend failure"),
+    ):
+        result = await icu_get_trends(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected trend failure" in result
+
+
+def test_icu_get_trends_read_only_annotation():
+    """The trends read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_trends"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+def test_icu_get_trends_docstring_documents_tsb_semantics():
+    """AC3: the docstring documents the tsb = ctl - atl semantics and the bound."""
+    docstring = icu_get_trends.__doc__ or ""
+    assert "ctl - atl" in docstring
+    assert "90" in docstring
