@@ -16,6 +16,18 @@ _API_KEY_QUERY_RE = re.compile(r"(api_key|apikey|key)\s*=\s*[A-Za-z0-9_-]+", re.
 # APIKEY prefix header style: APIKEY <value>
 _API_KEY_HEADER_RE = re.compile(r"APIKEY\s+[A-Za-z0-9_-]+", re.IGNORECASE)
 
+# Token assignments in prose or embedded JSON: token: v, "token": "v",
+# auth_token=v. Covers the #61 bearer-token field name
+# (coach_mcp_auth_token) when it appears inside a larger prose string that
+# the embedded-JSON path of _redact_string cannot reach (the JSON does not
+# start the string). Conservative: matching "token" as a key-ish assignment
+# may redact benign look-alikes, but a missed secret is worse than a
+# redacted non-secret.
+_TOKEN_ASSIGNMENT_RE = re.compile(
+    r"(token[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9._-]+",
+    re.IGNORECASE,
+)
+
 # General key/value patterns using colon separator: key: value
 _API_KEY_COLON_RE = re.compile(r"(?:api_key|apikey|key):\s*[A-Za-z0-9_-]+", re.IGNORECASE)
 
@@ -88,6 +100,7 @@ def redact_sensitive(text: str | None) -> str | None:
     * ``api_key=<value>`` -> ``api_key=[REDACTED]``
     * ``APIKEY <value>`` -> ``APIKEY [REDACTED]``
     * ``api_key: <value>`` -> ``[REDACTED]``
+    * ``token: <value>`` / ``"token": "<value>"`` -> ``token...[REDACTED]``
     * ``user@example.com`` -> ``[REDACTED:EMAIL]``
 
     Args:
@@ -105,6 +118,7 @@ def redact_sensitive(text: str | None) -> str | None:
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     text = _API_KEY_QUERY_RE.sub(r"\1=[REDACTED]", text)
     text = _API_KEY_HEADER_RE.sub("APIKEY [REDACTED]", text)
+    text = _TOKEN_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
     text = _API_KEY_COLON_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED:EMAIL]", text)
     return text

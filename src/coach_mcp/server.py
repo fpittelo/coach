@@ -10,10 +10,13 @@ from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from typing import Any, Literal, cast
 
+import uvicorn
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
+from starlette.types import ASGIApp
 
 from coach_mcp.audit import audit_tool_call, emit_tool_batch_outcome
+from coach_mcp.auth import BearerTokenMiddleware
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
 from coach_mcp.formatters import (
@@ -1366,8 +1369,34 @@ async def intervals_list_workouts(params: ListWorkoutsInput, ctx: Context) -> st
         return redact_sensitive(f"Error listing workouts: {exc}") or ""
 
 
+def _build_http_app(transport: Literal["sse", "streamable-http"]) -> ASGIApp:
+    """Build the Starlette app for an HTTP transport, bearer-guarded when configured.
+
+    Both the legacy SSE transport (``/sse`` + ``/messages/``) and the
+    streamable-HTTP transport (``/mcp``) are wrapped by the same
+    :class:`BearerTokenMiddleware` so every HTTP request is checked (issue #61
+    AC2/AC6). When ``COACH_MCP_AUTH_TOKEN`` is empty the app is served
+    unauthenticated and a WARNING is logged (unauthenticated dev mode, AC5) —
+    backward compatible with local stdio-style usage.
+    """
+    app: ASGIApp
+    if transport == "sse":
+        app = mcp.sse_app(host=settings.mcp_host)
+    else:
+        app = mcp.streamable_http_app(host=settings.mcp_host)
+    if settings.coach_mcp_auth_token:
+        logger.info("Bearer token authentication enabled on the %s transport.", transport)
+        return BearerTokenMiddleware(app, settings.coach_mcp_auth_token)
+    logger.warning(
+        "Auth token not set — running in unauthenticated dev mode; "
+        "all requests on the %s transport are allowed.",
+        transport,
+    )
+    return app
+
+
 def main() -> None:
-    """Run Coach MCP Server in stdio or streamable-http transport mode."""
+    """Run Coach MCP Server in stdio or HTTP transport mode."""
     transport = cast(
         Literal["stdio", "streamable-http", "sse"],
         settings.mcp_transport.replace("_", "-"),
@@ -1376,7 +1405,12 @@ def main() -> None:
         logger.info(
             f"Starting Coach MCP Server on {settings.mcp_host}:{settings.mcp_port} ({transport})..."
         )
-        mcp.run(transport=transport, host=settings.mcp_host, port=settings.mcp_port)
+        uvicorn.run(
+            _build_http_app(transport),
+            host=settings.mcp_host,
+            port=settings.mcp_port,
+            log_level=mcp.settings.log_level.lower(),
+        )
     else:
         logger.info("Starting Coach MCP Server on stdio...")
         mcp.run(transport="stdio")
