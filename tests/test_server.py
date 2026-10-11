@@ -38,6 +38,7 @@ from coach_mcp.formatters import (
 )
 from coach_mcp.models import (
     CompletedSessionsPage,
+    CompletedSessionSummary,
     CreateActivityInput,
     CreateEventInput,
     DeleteActivityInput,
@@ -72,6 +73,8 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    WorkoutComplianceEvent,
+    WorkoutComplianceReport,
     build_trend_report,
     build_workout_compliance_report,
     project_completed_sessions,
@@ -2580,6 +2583,51 @@ def test_format_workout_compliance_all_upcoming():
     assert "upcoming" in result
 
 
+def test_format_workout_compliance_hostile_name_renders_inert():
+    """A hostile event name cannot break the table or inject markdown (#90 Item 2)."""
+    hostile = WorkoutComplianceEvent(
+        event_id="e1",
+        date="2026-10-06",
+        name="| injected | [x](http://evil)",
+        status="completed",
+        compliance=95.0,
+        structure_diff="match",
+    )
+    multiline = WorkoutComplianceEvent(
+        event_id="e2",
+        date="2026-10-07",
+        name="Legit\nSneaky [y](http://evil2)",
+        status="completed",
+        compliance=90.0,
+        structure_diff="match",
+    )
+    report = WorkoutComplianceReport(
+        oldest="2026-10-05",
+        newest="2026-10-11",
+        total_planned=2,
+        completed=2,
+        missed=0,
+        upcoming=0,
+        adherence_rate=100.0,
+        events=[hostile, multiline],
+    )
+    result = format_workout_compliance(report)
+
+    # Table structure preserved: every row keeps exactly five cells.
+    for line in result.splitlines():
+        if line.startswith("|"):
+            assert len(re.findall(r"(?<!\\)\|", line)) == 6
+    # No link markdown survives: brackets are escaped, the target stays inert.
+    assert "[x](http://evil)" not in result
+    assert "[y](http://evil2)" not in result
+    assert "\\[x\\](http://evil)" in result
+    # Newlines are flattened so the row stays on one line.
+    assert "Legit Sneaky" in result
+    assert "Legit\nSneaky" not in result
+    # The hostile text itself is still visible (escaped, not stripped).
+    assert "injected" in result
+
+
 @pytest.mark.asyncio
 @patch("coach_mcp.models.date")
 async def test_icu_get_workout_compliance_markdown(mock_date, mock_ctx, mock_client):
@@ -2953,6 +3001,38 @@ def test_format_completed_sessions_empty_with_filter():
     assert "Swim" in result
 
 
+def test_format_completed_sessions_hostile_title_renders_inert():
+    """A hostile session title cannot break the table or inject markdown (#90 Item 2)."""
+    session = CompletedSessionSummary(
+        id="s1",
+        date="2026-10-08",
+        type="Ride",
+        title="| injected | [x](http://evil)",
+        duration_seconds=3600.0,
+        load=85.0,
+    )
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=1,
+        returned=1,
+        sessions=[session],
+    )
+    result = format_completed_sessions(page)
+
+    # Table structure preserved: every row keeps exactly five cells.
+    for line in result.splitlines():
+        if line.startswith("|"):
+            assert len(re.findall(r"(?<!\\)\|", line)) == 6
+    # No link markdown survives: brackets are escaped, the target stays inert.
+    assert "[x](http://evil)" not in result
+    assert "\\[x\\](http://evil)" in result
+    assert "injected" in result
+    # The benign id: link structure is preserved around the escaped title.
+    assert "](id:s1)" in result
+
+
 @pytest.mark.asyncio
 @patch("coach_mcp.models.date")
 async def test_icu_get_completed_sessions_markdown(mock_date, mock_ctx, mock_client):
@@ -3247,6 +3327,12 @@ def test_format_trend_report_single_point_has_no_direction_claim():
         (50.0, 51.0, "holding steady"),
         (50.0, 47.0, "declining slightly"),
         (50.0, 44.0, "declining steadily"),
+        # Band boundaries must be symmetric (#90 Item 3): exactly ±5 is
+        # "steadily", exactly ±2 is "holding steady".
+        (50.0, 55.0, "rising steadily"),
+        (55.0, 50.0, "declining steadily"),
+        (50.0, 52.0, "holding steady"),
+        (52.0, 50.0, "holding steady"),
     ],
 )
 def test_format_trend_report_direction_phrases(first_ctl, last_ctl, expected_phrase):
