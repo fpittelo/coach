@@ -30,6 +30,7 @@ dev = [
     "mypy>=1.10.0",
     "black>=24.0.0",
     "isort>=5.13.0",
+    "pip-audit>=2.7.0",
 ]
 
 [project.scripts]
