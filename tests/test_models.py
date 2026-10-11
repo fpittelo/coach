@@ -1,6 +1,8 @@
 """Comprehensive tests for Pydantic v2 input validation models."""
 
-from datetime import date
+import json
+from datetime import date, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -22,8 +24,16 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuActivityType,
     IcuAddSessionCommentInput,
+    IcuBatchCreateEventsInput,
+    IcuBatchEventOutcome,
+    IcuEventDraft,
+    IcuGetCompletedSessionsInput,
+    IcuGetTrendsInput,
     IcuGetWellnessInput,
+    IcuGetWorkoutComplianceInput,
+    IcuTrendGranularity,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -34,6 +44,10 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    WorkoutComplianceEvent,
+    build_trend_report,
+    build_workout_compliance_report,
+    project_completed_sessions,
     project_wellness_days,
 )
 
@@ -1518,3 +1532,1003 @@ def test_icu_add_session_comment_input_extra_forbid():
     """Test IcuAddSessionCommentInput rejects extra fields."""
     with pytest.raises(ValidationError):
         IcuAddSessionCommentInput(activity_id="i1", comment="ok", extra=True)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Event Models (#94)
+# ---------------------------------------------------------------------------
+
+
+def test_icu_event_draft_accepts_valid_draft():
+    """A valid event draft constructs with all optional fields populated."""
+    draft = IcuEventDraft(
+        external_id="plan-w42-tue",
+        date="2026-10-13",
+        name="Tuesday Threshold",
+        type="Ride",
+        category="WORKOUT",
+        description="3x10min @ 95% FTP",
+        moving_time_seconds=3600,
+        icu_training_load=90.0,
+        workout_doc="- Warm up 10m 50-65%\n3x\n- 10m 95%\n- 5m 50%",
+    )
+    assert draft.external_id == "plan-w42-tue"
+    assert draft.date == "2026-10-13"
+    assert draft.name == "Tuesday Threshold"
+    assert draft.type == "Ride"
+    assert draft.category == "WORKOUT"
+    assert draft.description == "3x10min @ 95% FTP"
+    assert draft.moving_time_seconds == 3600
+    assert draft.icu_training_load == 90.0
+    assert draft.workout_doc is not None
+
+
+def test_icu_event_draft_defaults():
+    """Optional draft fields default to Ride / WORKOUT / None."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Rest Day Note")
+    assert draft.type == "Ride"
+    assert draft.category == "WORKOUT"
+    assert draft.description is None
+    assert draft.workout_doc is None
+    assert draft.moving_time_seconds is None
+    assert draft.icu_training_load is None
+
+
+def test_icu_event_draft_rejects_malformed_date_shape():
+    """AC5: a non-ISO date shape is a field-level error."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="13/10/2026", name="Bad Date")
+
+
+def test_icu_event_draft_rejects_impossible_calendar_date():
+    """AC5: a shape-valid but impossible calendar date is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-02-30", name="Bad Date")
+
+
+def test_icu_event_draft_rejects_bad_external_id():
+    """The external_id reconciliation key rejects empty and unsafe values."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="", date="2026-10-13", name="Bad")
+
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="../../etc/passwd", date="2026-10-13", name="Bad")
+
+
+def test_icu_event_draft_sanitizes_name_and_description():
+    """Markdown-injection defense (#90): markup stripped from title and description."""
+    draft = IcuEventDraft(
+        external_id="x1",
+        date="2026-10-13",
+        name="<script>alert('xss')</script>Threshold Day",
+        description="<img src=x onerror=alert(1)>Ride steady.",
+    )
+    assert "<script>" not in draft.name
+    assert "alert" not in draft.name
+    assert "Threshold Day" in draft.name
+    assert "<img" not in str(draft.description)
+    assert "onerror" not in str(draft.description)
+    assert "Ride steady." in str(draft.description)
+
+
+def test_icu_event_draft_name_newlines_collapsed():
+    """A title is single-line: newlines collapse to single spaces."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Tuesday\nThreshold")
+    assert draft.name == "Tuesday Threshold"
+
+
+def test_icu_event_draft_rejects_name_sanitizing_to_empty():
+    """A title that is empty after sanitization is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-10-13", name="<script>x</script>")
+
+
+def test_icu_event_draft_rejects_description_sanitizing_to_empty():
+    """A provided description that sanitizes to empty is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(
+            external_id="x1", date="2026-10-13", name="Ok", description="<script>x</script>"
+        )
+
+
+def test_icu_event_draft_rejects_unknown_category():
+    """AC5: a category outside the ICU event enum is a field-level error."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-10-13", name="Bad", category="BANANA")
+
+
+def test_icu_batch_create_events_input_accepts_valid_batch():
+    """A valid batch constructs; confirm_token defaults to None (preview phase)."""
+    model = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(external_id="a", date="2026-10-12", name="Mon"),
+            IcuEventDraft(external_id="b", date="2026-10-13", name="Tue"),
+        ]
+    )
+    assert len(model.events) == 2
+    assert model.confirm_token is None
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_batch_create_events_input_rejects_over_50_items():
+    """AC4: a batch over 50 items is rejected at validation, before any network call."""
+    drafts = [
+        IcuEventDraft(external_id=f"e{idx}", date="2026-10-13", name=f"W{idx}") for idx in range(51)
+    ]
+    with pytest.raises(ValidationError) as excinfo:
+        IcuBatchCreateEventsInput(events=drafts)
+    assert "50" in str(excinfo.value)
+
+
+def test_icu_batch_create_events_input_accepts_50_items():
+    """The batch boundary of exactly 50 items is accepted."""
+    drafts = [
+        IcuEventDraft(external_id=f"e{idx}", date="2026-10-13", name=f"W{idx}") for idx in range(50)
+    ]
+    model = IcuBatchCreateEventsInput(events=drafts)
+    assert len(model.events) == 50
+
+
+def test_icu_batch_create_events_input_rejects_empty_batch():
+    """An empty batch is rejected at validation."""
+    with pytest.raises(ValidationError):
+        IcuBatchCreateEventsInput(events=[])
+
+
+def test_icu_batch_create_events_input_rejects_duplicate_external_ids():
+    """Duplicate external_ids inside one batch are a caller error (upsert ambiguity)."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuBatchCreateEventsInput(
+            events=[
+                IcuEventDraft(external_id="dup", date="2026-10-12", name="Mon"),
+                IcuEventDraft(external_id="dup", date="2026-10-13", name="Tue"),
+            ]
+        )
+    assert "dup" in str(excinfo.value)
+
+
+def test_icu_batch_create_events_input_extra_forbid():
+    """Extra fields are rejected."""
+    with pytest.raises(ValidationError):
+        IcuBatchCreateEventsInput(
+            events=[IcuEventDraft(external_id="a", date="2026-10-12", name="Mon")],
+            extra=True,  # type: ignore
+        )
+
+
+def test_icu_event_draft_accepts_explicit_none_description():
+    """An explicitly None description stays None (validator short-circuits)."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Ok", description=None)
+    assert draft.description is None
+
+
+def test_icu_batch_event_outcome_model():
+    """The per-item outcome model validates its literal outcome values."""
+    created = IcuBatchEventOutcome(external_id="a", outcome="created", event_id="101")
+    assert created.outcome == "created"
+    assert created.event_id == "101"
+    assert created.reason is None
+
+    updated = IcuBatchEventOutcome(external_id="b", outcome="updated", event_id="102")
+    assert updated.outcome == "updated"
+
+    failed = IcuBatchEventOutcome(external_id="c", outcome="failed", reason="upstream 500")
+    assert failed.outcome == "failed"
+    assert failed.event_id is None
+    assert failed.reason == "upstream 500"
+
+    with pytest.raises(ValidationError):
+        IcuBatchEventOutcome(external_id="d", outcome="skipped")  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# ICU Workout Compliance Models (#95)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_workout_compliance_input_default_dates(mock_date):
+    """Test IcuGetWorkoutComplianceInput defaults to a 7-day debrief window."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetWorkoutComplianceInput()
+    assert model.oldest == "2026-10-04"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_workout_compliance_input_explicit_dates_preserved(mock_date):
+    """Test IcuGetWorkoutComplianceInput keeps an explicit in-bounds date range."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetWorkoutComplianceInput(oldest="2026-10-01", newest="2026-10-10")
+    assert model.oldest == "2026-10-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_workout_compliance_input_rejects_range_over_90_days():
+    """AC1: a range wider than 90 days is rejected with an explicit error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-01-01", newest="2026-10-11")
+    message = str(excinfo.value)
+    assert "90-day maximum" in message
+    assert "283" in message  # 2026-01-01 -> 2026-10-11 spans 283 days
+
+
+def test_icu_get_workout_compliance_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetWorkoutComplianceInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_workout_compliance_input_rejects_oldest_after_newest():
+    """An inverted range is rejected with the house error message."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-10-11", newest="2026-01-01")
+    assert "oldest must be on or before newest" in str(excinfo.value)
+
+
+def test_icu_get_workout_compliance_input_rejects_impossible_calendar_dates():
+    """Well-formed but impossible calendar dates are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_workout_compliance_input_rejects_bad_date_format():
+    """Non-ISO date shapes are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_workout_compliance_input_extra_forbid():
+    """Extra fields are rejected."""
+    with pytest.raises(ValidationError):
+        IcuGetWorkoutComplianceInput(extra=True)  # type: ignore
+
+
+def _compliance_event(
+    event_id: int,
+    date_str: str,
+    name: str = "Threshold",
+    category: str = "WORKOUT",
+    workout_doc: Any | None = None,
+) -> dict[str, Any]:
+    """Build a planned-event fixture shaped like an ICU EventEx."""
+    event: dict[str, Any] = {
+        "id": event_id,
+        "name": name,
+        "category": category,
+        "type": "Ride",
+        "start_date_local": f"{date_str}T08:00:00",
+        "moving_time": 3600,
+        "icu_training_load": 90,
+    }
+    if workout_doc is not None:
+        event["workout_doc"] = workout_doc
+    return event
+
+
+def _compliance_activity(
+    activity_id: str,
+    paired_event_id: int | None,
+    compliance: float | None = 95.0,
+    interval_summary: list[str] | None = None,
+    name: str = "Threshold",
+) -> dict[str, Any]:
+    """Build an executed-activity fixture shaped like an ICU Activity."""
+    activity: dict[str, Any] = {
+        "id": activity_id,
+        "name": name,
+        "type": "Ride",
+        "start_date_local": "2026-10-06T09:00:00",
+        "moving_time": 3500,
+        "average_heartrate": 150,
+        "average_watts": 250.0,
+    }
+    if paired_event_id is not None:
+        activity["paired_event_id"] = paired_event_id
+    if compliance is not None:
+        activity["compliance"] = compliance
+    if interval_summary is not None:
+        activity["interval_summary"] = interval_summary
+    return activity
+
+
+def test_build_workout_compliance_report_joins_via_paired_event_id():
+    """AC2: the join is by paired_event_id, never by title or date proximity.
+
+    Two identically-named events on adjacent dates; the executed activity is
+    paired with the SECOND event only. Heuristic date/title matching would
+    wrongly complete the first event.
+    """
+    events = [
+        _compliance_event(201, "2026-10-06", name="Threshold"),
+        _compliance_event(202, "2026-10-07", name="Threshold"),
+    ]
+    activities = [_compliance_activity("a1", paired_event_id=202)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    by_id = {event.event_id: event for event in report.events}
+    assert by_id["201"].status == "missed"
+    assert by_id["202"].status == "completed"
+    assert by_id["202"].compliance == 95.0
+    assert (report.completed, report.missed) == (1, 1)
+
+
+def test_build_workout_compliance_report_classifies_missed_event():
+    """A past planned workout without a paired activity is missed."""
+    events = [_compliance_event(301, "2026-10-06")]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "missed"
+    assert report.events[0].compliance is None
+    assert (report.completed, report.missed, report.upcoming) == (0, 1, 0)
+    assert report.adherence_rate == 0.0
+
+
+def test_build_workout_compliance_report_upcoming_event_excluded_from_rate():
+    """A future planned workout is upcoming, not missed, and not rate-counted."""
+    events = [
+        _compliance_event(401, "2026-10-06"),
+        _compliance_event(402, "2026-10-20"),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-20", events, [], today=date(2026, 10, 11)
+    )
+    by_id = {event.event_id: event for event in report.events}
+    assert by_id["401"].status == "missed"
+    assert by_id["402"].status == "upcoming"
+    assert (report.completed, report.missed, report.upcoming) == (0, 1, 1)
+    assert report.adherence_rate == 0.0  # denominator excludes the upcoming event
+
+
+def test_build_workout_compliance_report_structure_diff_match():
+    """AC3 (match): planned step count equals executed interval count."""
+    workout_doc = {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]}
+    events = [_compliance_event(501, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity(
+            "a1", paired_event_id=501, interval_summary=["4m 115%", "3m 50%", "4m 115%"]
+        )
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "match"
+
+
+def test_build_workout_compliance_report_structure_diff_mismatch():
+    """AC3 (mismatch): executed interval count differs from the planned steps."""
+    workout_doc = {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]}
+    events = [_compliance_event(502, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity("a2", paired_event_id=502, interval_summary=["4m 115%", "3m 50%"])
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "mismatch"
+
+
+def test_build_workout_compliance_report_structure_diff_unavailable_without_doc():
+    """AC3: a DSL-string workout_doc cannot be structurally diffed -> unavailable."""
+    events = [_compliance_event(503, "2026-10-06", workout_doc="- 10m warmup\n3x\n- 4m 115%")]
+    activities = [_compliance_activity("a3", paired_event_id=503, interval_summary=["4m 115%"])]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "unavailable"
+
+
+def test_build_workout_compliance_report_structure_diff_unavailable_without_intervals():
+    """AC3: an activity without interval data yields an unavailable diff."""
+    workout_doc = {"steps": [{"duration": 600}]}
+    events = [_compliance_event(504, "2026-10-06", workout_doc=workout_doc)]
+    activities = [_compliance_activity("a4", paired_event_id=504, interval_summary=None)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].structure_diff == "unavailable"
+
+
+def test_build_workout_compliance_report_ignores_non_workout_events():
+    """Only WORKOUT-category events are classified; notes are not 'missed'."""
+    events = [
+        _compliance_event(601, "2026-10-06", category="NOTE"),
+        _compliance_event(602, "2026-10-07", category="WORKOUT"),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert [event.event_id for event in report.events] == ["602"]
+    assert (report.total_planned, report.missed) == (1, 1)
+
+
+def test_build_workout_compliance_report_empty_inputs():
+    """AC5: an empty range yields a structured empty report, not an error."""
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", [], [], today=date(2026, 10, 11)
+    )
+    assert report.total_planned == 0
+    assert report.completed == 0
+    assert report.missed == 0
+    assert report.upcoming == 0
+    assert report.adherence_rate is None
+    assert report.events == []
+
+
+def test_build_workout_compliance_report_no_matching_workout_events():
+    """AC5: events exist but none is a WORKOUT -> structured empty report."""
+    events = [_compliance_event(701, "2026-10-06", category="NOTE")]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, [], today=date(2026, 10, 11)
+    )
+    assert report.total_planned == 0
+    assert report.adherence_rate is None
+    assert report.events == []
+
+
+def test_build_workout_compliance_report_adherence_rate():
+    """The summary adherence rate is completed / (completed + missed) in percent."""
+    events = [
+        _compliance_event(801, "2026-10-06"),
+        _compliance_event(802, "2026-10-07"),
+        _compliance_event(803, "2026-10-08"),
+        _compliance_event(804, "2026-10-09"),
+    ]
+    activities = [_compliance_activity("a1", paired_event_id=801)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-09", events, activities, today=date(2026, 10, 11)
+    )
+    assert (report.completed, report.missed) == (1, 3)
+    assert report.adherence_rate == 25.0
+
+
+def test_build_workout_compliance_report_compliance_missing_is_none():
+    """A paired activity without a native compliance value projects None."""
+    events = [_compliance_event(901, "2026-10-06")]
+    activities = [_compliance_activity("a1", paired_event_id=901, compliance=None)]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "completed"
+    assert report.events[0].compliance is None
+
+
+def test_workout_compliance_report_whitelist_only_fields():
+    """AC4: the report exposes whitelisted fields only — no raw activity dump."""
+    workout_doc = {"steps": [{"duration": 600}]}
+    events = [_compliance_event(1001, "2026-10-06", workout_doc=workout_doc)]
+    activities = [
+        _compliance_activity(
+            "a1",
+            paired_event_id=1001,
+            interval_summary=["4m 115%"],
+        )
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    dumped = report.model_dump()
+    assert set(dumped.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    assert set(dumped["events"][0].keys()) == {
+        "event_id",
+        "date",
+        "name",
+        "status",
+        "compliance",
+        "structure_diff",
+    }
+    # Raw activity payload values (HR, watts) never surface.
+    serialized = json.dumps(dumped)
+    assert "150" not in serialized
+    assert "250.0" not in serialized
+
+
+def test_workout_compliance_event_model_rejects_unknown_status():
+    """The per-event status is a closed literal set."""
+    with pytest.raises(ValidationError):
+        WorkoutComplianceEvent(
+            event_id="1",
+            date="2026-10-06",
+            name="X",
+            status="postponed",  # type: ignore
+            compliance=None,
+            structure_diff="unavailable",
+        )
+
+
+def test_build_workout_compliance_report_skips_malformed_payloads():
+    """Defensive guards: malformed events/activities are skipped, never crash."""
+    events = [
+        "not-a-dict",  # type: ignore[list-item]
+        _compliance_event("bad-id", "2026-10-06"),  # non-numeric event id
+        _compliance_event(1101, "2026-10-06"),
+    ]
+    activities = [
+        "not-a-dict",  # type: ignore[list-item]
+        _compliance_activity("a0", paired_event_id="not-an-int"),  # type: ignore[arg-item]
+        _compliance_activity("a1", paired_event_id=1101),
+    ]
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", events, activities, today=date(2026, 10, 11)
+    )
+    assert [event.event_id for event in report.events] == ["1101"]
+    assert report.events[0].status == "completed"
+
+
+def test_build_workout_compliance_report_unparseable_event_date_is_missed():
+    """An event with an unparseable date cannot be upcoming; unpaired -> missed."""
+    event = _compliance_event(1201, "2026-10-06")
+    event["start_date_local"] = "not-a-timestamp"
+    report = build_workout_compliance_report(
+        "2026-10-06", "2026-10-07", [event], [], today=date(2026, 10, 11)
+    )
+    assert report.events[0].status == "missed"
+
+
+# ---------------------------------------------------------------------------
+# ICU Completed Sessions Models (#96)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_completed_sessions_input_default_dates(mock_date):
+    """Test IcuGetCompletedSessionsInput defaults to a 7-day debrief window."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetCompletedSessionsInput()
+    assert model.oldest == "2026-10-04"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.activity_type is None
+    assert model.limit == 50
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_get_completed_sessions_input_explicit_dates_preserved():
+    """Test IcuGetCompletedSessionsInput keeps an explicit in-bounds date range."""
+    model = IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-10")
+    assert model.oldest == "2026-10-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_completed_sessions_input_rejects_range_over_90_days():
+    """AC1: a >90-day span is rejected with an explicit validation error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+
+
+def test_icu_get_completed_sessions_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetCompletedSessionsInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_completed_sessions_input_rejects_oldest_after_newest():
+    """Test IcuGetCompletedSessionsInput rejects an inverted date range."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-11", newest="2026-01-01")
+
+
+def test_icu_get_completed_sessions_input_rejects_impossible_calendar_dates():
+    """Test IcuGetCompletedSessionsInput rejects well-formed but impossible dates."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_completed_sessions_input_rejects_bad_date_format():
+    """Test IcuGetCompletedSessionsInput rejects non-ISO date shapes."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_completed_sessions_input_page_size_cap():
+    """AC2: the page size is capped to 1-100."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=0)
+
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=101)
+
+    valid_max = IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=100)
+    assert valid_max.limit == 100
+
+
+def test_icu_get_completed_sessions_input_type_filter_accepts_enum_values():
+    """AC3: defined enum values are accepted (member and raw string)."""
+    model = IcuGetCompletedSessionsInput(
+        oldest="2026-10-01", newest="2026-10-11", activity_type=IcuActivityType.RIDE
+    )
+    assert model.activity_type == IcuActivityType.RIDE
+
+    model_string = IcuGetCompletedSessionsInput(
+        oldest="2026-10-01", newest="2026-10-11", activity_type="VirtualRide"
+    )
+    assert model_string.activity_type == IcuActivityType.VIRTUAL_RIDE
+
+
+def test_icu_get_completed_sessions_input_type_filter_rejects_unknown_value():
+    """AC3: values outside the enum are rejected with field-level errors."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(
+            oldest="2026-10-01", newest="2026-10-11", activity_type="Cycling"
+        )
+    assert "activity_type" in str(excinfo.value)
+
+
+def test_icu_get_completed_sessions_input_type_filter_rejects_loose_boolean():
+    """#90 gating: a loose boolean is never a valid activity-type filter."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", activity_type=True)
+
+
+def test_icu_get_completed_sessions_input_extra_forbid():
+    """Test IcuGetCompletedSessionsInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(extra=True)  # type: ignore
+
+
+def _completed_session_raw(**overrides: Any) -> dict[str, Any]:
+    """Raw ICU activity payload including non-whitelisted exfiltration bait."""
+    record: dict[str, Any] = {
+        "id": "a1",
+        "name": "Zwift Tempo",
+        "type": "VirtualRide",
+        "start_date_local": "2026-10-08T09:00:00",
+        "moving_time": 3600,
+        "icu_training_load": 85,
+        "average_heartrate": 150,
+        "average_watts": 250.0,
+        "max_heartrate": 180,
+        "calories": 900,
+        "description": "secret-athlete-notes",
+        "paired_event_id": 101,
+        "someUnknownIcuField": "leak-attempt",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_completed_session_summary_exposes_whitelist_only():
+    """Binding condition 2: projection drops every non-whitelisted ICU field."""
+    projected = project_completed_sessions([_completed_session_raw()])
+    assert len(projected) == 1
+    dumped = projected[0].model_dump()
+    assert set(dumped.keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    assert dumped["id"] == "a1"
+    assert dumped["date"] == "2026-10-08"
+    assert dumped["type"] == "VirtualRide"
+    assert dumped["title"] == "Zwift Tempo"
+    assert dumped["duration_seconds"] == 3600.0
+    assert dumped["load"] == 85.0
+    # Never raw pass-through: non-whitelisted values are absent.
+    for banned in (
+        "average_heartrate",
+        "average_watts",
+        "max_heartrate",
+        "calories",
+        "description",
+        "paired_event_id",
+        "someUnknownIcuField",
+    ):
+        assert banned not in dumped
+
+
+def test_completed_session_summary_missing_fields_are_none():
+    """Missing whitelisted fields project as None, never as raw defaults."""
+    projected = project_completed_sessions([{"id": "a2", "type": "Run"}])
+    session = projected[0]
+    assert session.date == ""
+    assert session.title == "Untitled"
+    assert session.duration_seconds is None
+    assert session.load is None
+
+
+def test_completed_session_summary_ignores_non_numeric_values():
+    """Non-numeric ICU values are dropped instead of passing through."""
+    projected = project_completed_sessions(
+        [{"id": "a3", "type": "Ride", "moving_time": "not-a-number", "icu_training_load": True}]
+    )
+    assert projected[0].duration_seconds is None
+    assert projected[0].load is None
+
+
+def test_project_completed_sessions_filters_by_type():
+    """AC3: the strict enum filter keeps only matching activity types."""
+    records = [
+        _completed_session_raw(id="a1", type="VirtualRide"),
+        _completed_session_raw(id="a2", type="Run"),
+        _completed_session_raw(id="a3", type="Ride"),
+    ]
+    rides = project_completed_sessions(records, activity_type=IcuActivityType.RIDE)
+    assert [session.id for session in rides] == ["a3"]
+
+    all_sessions = project_completed_sessions(records)
+    assert [session.id for session in all_sessions] == ["a1", "a2", "a3"]
+
+
+def test_project_completed_sessions_skips_malformed_records():
+    """Defensive guard: malformed records are skipped, never crash."""
+    projected = project_completed_sessions(["not-a-dict"])  # type: ignore[list-item]
+    assert projected == []
+
+
+def test_project_completed_sessions_empty():
+    """An empty ICU payload projects to an empty list."""
+    assert project_completed_sessions([]) == []
+
+
+# ---------------------------------------------------------------------------
+# ICU Trends Models (#97)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_trends_input_default_dates(mock_date):
+    """Test IcuGetTrendsInput defaults to a 42-day window and weekly granularity."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetTrendsInput()
+    assert model.oldest == "2026-08-30"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.granularity == IcuTrendGranularity.WEEKLY
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_get_trends_input_explicit_dates_preserved():
+    """Test IcuGetTrendsInput keeps an explicit in-bounds date range."""
+    model = IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-10")
+    assert model.oldest == "2026-09-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_trends_input_rejects_range_over_90_days():
+    """AC1: a >90-day span is rejected with an explicit validation error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+
+
+def test_icu_get_trends_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetTrendsInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_trends_input_rejects_oldest_after_newest():
+    """Test IcuGetTrendsInput rejects an inverted date range."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-10-11", newest="2026-01-01")
+
+
+def test_icu_get_trends_input_rejects_impossible_calendar_dates():
+    """Test IcuGetTrendsInput rejects well-formed but impossible dates."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_trends_input_rejects_bad_date_format():
+    """Test IcuGetTrendsInput rejects non-ISO date shapes."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_trends_input_granularity_accepts_enum_values():
+    """AC4: defined enum values are accepted (member and raw string)."""
+    model = IcuGetTrendsInput(
+        oldest="2026-09-01", newest="2026-10-11", granularity=IcuTrendGranularity.DAILY
+    )
+    assert model.granularity == IcuTrendGranularity.DAILY
+
+    model_string = IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity="weekly")
+    assert model_string.granularity == IcuTrendGranularity.WEEKLY
+
+
+def test_icu_get_trends_input_granularity_rejects_unknown_value():
+    """AC4: values outside the enum are rejected with field-level errors."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity="monthly")
+    assert "granularity" in str(excinfo.value)
+
+
+def test_icu_get_trends_input_granularity_rejects_loose_boolean():
+    """#90 gating: a loose boolean is never a valid granularity."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(oldest="2026-09-01", newest="2026-10-11", granularity=True)
+
+
+def test_icu_get_trends_input_extra_forbid():
+    """Test IcuGetTrendsInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuGetTrendsInput(extra=True)  # type: ignore
+
+
+def _trend_raw(**overrides: Any) -> dict[str, Any]:
+    """Raw ICU wellness payload including non-whitelisted exfiltration bait."""
+    record: dict[str, Any] = {
+        "id": "2026-10-10",
+        "ctl": 55.0,
+        "atl": 65.0,
+        "rampRate": 0.5,
+        "restingHR": 44,
+        "hrv": 62.5,
+        "weight": 70.2,
+        "sleepSecs": 28800,
+        "readiness": 88.0,
+        "comments": "secret-comment-text",
+        "someUnknownIcuField": "leak-attempt",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_build_trend_report_weekly_downsampling_keeps_bucket_last_day():
+    """AC2: weekly buckets keep the last available day's values per 7-day bucket."""
+    records = [
+        _trend_raw(id="2026-10-06", ctl=50.0, atl=60.0, rampRate=0.1),
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0, rampRate=0.2),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0, rampRate=0.5),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+
+    assert report.granularity == "weekly"
+    # newest = 2026-10-10; bucket 0 covers 2026-10-04..2026-10-10 -> last day 2026-10-10.
+    # bucket 1 covers 2026-09-27..2026-10-03 -> no records -> no point.
+    assert [point.date for point in report.points] == ["2026-10-10"]
+    assert report.points[0].ctl == 55.0
+    assert report.points[0].atl == 65.0
+    assert report.points[0].ramp_rate == 0.5
+
+
+def test_build_trend_report_tsb_derived_as_ctl_minus_atl():
+    """AC3: tsb is derived server-side as ctl - atl."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw()])
+    assert report.points[0].tsb == -10.0
+
+
+def test_build_trend_report_tsb_none_when_load_missing():
+    """tsb is None when ctl or atl is absent."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw(id="2026-10-10", atl=None)])
+    assert report.points[0].tsb is None
+    assert report.points[0].ctl == 55.0
+
+
+def test_build_trend_report_point_count_bound_at_max_window():
+    """AC2: a 90-day window yields at most 13 weekly points (and <=91 daily)."""
+    records = [
+        _trend_raw(id=(date(2026, 7, 13) + timedelta(days=offset)).isoformat(), ctl=50.0 + offset)
+        for offset in range(91)  # 2026-07-13 .. 2026-10-12 inclusive
+    ]
+    weekly = build_trend_report(
+        "2026-07-13", "2026-10-11", records, granularity=IcuTrendGranularity.WEEKLY
+    )
+    assert len(weekly.points) <= 13
+
+    daily = build_trend_report(
+        "2026-07-13", "2026-10-11", records, granularity=IcuTrendGranularity.DAILY
+    )
+    assert len(daily.points) <= 91
+
+
+def test_build_trend_report_daily_granularity_one_point_per_record():
+    """AC2: daily granularity keeps one point per available record day."""
+    records = [
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+    ]
+    report = build_trend_report(
+        "2026-10-01", "2026-10-10", records, granularity=IcuTrendGranularity.DAILY
+    )
+    assert [point.date for point in report.points] == ["2026-10-08", "2026-10-10"]
+
+
+def test_build_trend_report_snapshot_is_latest_record():
+    """The snapshot carries the most recent available daily values."""
+    records = [
+        _trend_raw(id="2026-10-08", ctl=52.0, atl=61.0, rampRate=0.2),
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0, rampRate=0.5),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert report.snapshot is not None
+    assert report.snapshot.date == "2026-10-10"
+    assert report.snapshot.ctl == 55.0
+    assert report.snapshot.tsb == -10.0
+
+
+def test_build_trend_report_empty_records_structured_empty():
+    """An empty payload yields an empty series and no snapshot, not an error."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [])
+    assert report.points == []
+    assert report.snapshot is None
+
+
+def test_build_trend_report_exposes_whitelist_only():
+    """Binding condition 2: projection drops every non-whitelisted ICU field."""
+    report = build_trend_report("2026-10-01", "2026-10-10", [_trend_raw()])
+    dumped = report.model_dump()
+    assert set(dumped.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert set(dumped["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert banned not in dumped["points"][0]
+        assert f'"{banned}"' not in json.dumps(dumped)
+
+
+def test_build_trend_report_ignores_non_numeric_values():
+    """Non-numeric ICU values are dropped instead of passing through."""
+    report = build_trend_report(
+        "2026-10-01",
+        "2026-10-10",
+        [_trend_raw(id="2026-10-10", ctl="not-a-number", rampRate=True)],
+    )
+    point = report.points[0]
+    assert point.ctl is None
+    assert point.ramp_rate is None
+    assert point.tsb is None
+
+
+def test_build_trend_report_skips_malformed_and_undatable_records():
+    """Defensive guards: malformed records and unparseable dates are skipped."""
+    records = [
+        "not-a-dict",  # type: ignore[list-item]
+        _trend_raw(id="not-a-date"),
+        _trend_raw(id="2026-10-10"),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert [point.date for point in report.points] == ["2026-10-10"]
+
+
+def test_build_trend_report_sorts_unsorted_input():
+    """Records arriving out of order are sorted before bucketing."""
+    records = [
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+        _trend_raw(id="2026-10-02", ctl=48.0, atl=58.0),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    # Weekly: bucket 0 (10-04..10-10) keeps 10-10; bucket 1 (09-27..10-03) keeps 10-02.
+    assert [point.date for point in report.points] == ["2026-10-02", "2026-10-10"]
+
+
+def test_build_trend_report_drops_records_outside_bounded_range():
+    """Defensive bound: records outside [oldest, newest] never enter the series."""
+    records = [
+        _trend_raw(id="2026-01-01", ctl=10.0, atl=20.0),  # far older than oldest
+        _trend_raw(id="2026-12-25", ctl=90.0, atl=95.0),  # beyond newest
+        _trend_raw(id="2026-10-10", ctl=55.0, atl=65.0),
+    ]
+    report = build_trend_report("2026-10-01", "2026-10-10", records)
+    assert [point.date for point in report.points] == ["2026-10-10"]

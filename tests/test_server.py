@@ -1,12 +1,15 @@
 """Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
 import json
-from datetime import date
+import re
+from datetime import date, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import ValidationError
 
 from coach_mcp.client import (
     IntervalsAPIError,
@@ -17,6 +20,7 @@ from coach_mcp.formatters import (
     format_activities_list,
     format_activity_detail,
     format_activity_streams,
+    format_completed_sessions,
     format_events_list,
     format_fitness_summary,
     format_folders,
@@ -26,11 +30,14 @@ from coach_mcp.formatters import (
     format_profile,
     format_readiness_dashboard,
     format_sport_settings,
+    format_trend_report,
     format_wellness_list,
+    format_workout_compliance,
     format_workouts,
     to_json_str,
 )
 from coach_mcp.models import (
+    CompletedSessionsPage,
     CreateActivityInput,
     CreateEventInput,
     DeleteActivityInput,
@@ -46,8 +53,15 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuActivityType,
     IcuAddSessionCommentInput,
+    IcuBatchCreateEventsInput,
+    IcuEventDraft,
+    IcuGetCompletedSessionsInput,
+    IcuGetTrendsInput,
     IcuGetWellnessInput,
+    IcuGetWorkoutComplianceInput,
+    IcuTrendGranularity,
     ListActivitiesInput,
     ListEventsInput,
     ListFoldersInput,
@@ -58,12 +72,21 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     WellnessRecordItem,
+    build_trend_report,
+    build_workout_compliance_report,
+    project_completed_sessions,
     project_wellness_days,
 )
 from coach_mcp.server import (
+    _build_batch_event_payload,
+    _derive_batch_confirm_token,
     _get_client_from_ctx,
     icu_add_session_comment,
+    icu_batch_create_events,
+    icu_get_completed_sessions,
+    icu_get_trends,
     icu_get_wellness,
+    icu_get_workout_compliance,
     intervals_create_activity,
     intervals_create_event,
     intervals_delete_activity,
@@ -153,6 +176,10 @@ def test_tools_registered():
         "intervals_list_workouts",
         "icu_get_wellness",
         "icu_add_session_comment",
+        "icu_batch_create_events",
+        "icu_get_workout_compliance",
+        "icu_get_completed_sessions",
+        "icu_get_trends",
     ]
 
     for expected in expected_tools:
@@ -2048,3 +2075,1367 @@ def test_format_power_model_alternative_keys():
     assert "21000" in result
     assert "1250" in result
     assert "CP Model" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Events Tool (#94)
+# ---------------------------------------------------------------------------
+
+
+def _batch_params(**overrides: Any) -> IcuBatchCreateEventsInput:
+    """Build a two-draft batch input with optional overrides."""
+    drafts = [
+        IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Tuesday Threshold"),
+        IcuEventDraft(external_id="w42-wed", date="2026-10-14", name="Wednesday Recovery"),
+    ]
+    kwargs: dict[str, Any] = {"events": drafts}
+    kwargs.update(overrides)
+    return IcuBatchCreateEventsInput(**kwargs)
+
+
+def _extract_preview_token(result: str) -> str:
+    """Extract the confirmation token from a markdown preview response."""
+    match = re.search(r"Confirmation token\*\*: `([0-9a-f]{16})`", result)
+    assert match, f"no confirmation token in preview: {result}"
+    return match.group(1)
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preview_returns_token(mock_ctx, mock_client):
+    """AC3: the preview phase returns a confirmation token and writes nothing."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(), mock_ctx)
+
+    assert "Batch Event Preview" in result
+    assert "dry-run" in result
+    assert "w42-tue" in result
+    assert "Tuesday Threshold" in result
+    token = _extract_preview_token(result)
+    assert len(token) == 16
+    mock_client.bulk_create_events.assert_not_awaited()
+    mock_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preview_json(mock_ctx, mock_client):
+    """The JSON preview carries the token and the normalized payloads."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = _batch_params(response_format=ResponseFormat.JSON)
+    result = await icu_batch_create_events(params, mock_ctx)
+
+    data = json.loads(result)
+    assert data["phase"] == "preview"
+    assert len(data["confirm_token"]) == 16
+    assert data["item_count"] == 2
+    assert data["events"][0]["external_id"] == "w42-tue"
+    assert data["events"][0]["start_date_local"] == "2026-10-13T08:00:00"
+    assert data["events"][0]["name"] == "Tuesday Threshold"
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_executes_with_valid_token(mock_ctx, mock_client):
+    """AC1/AC3: execution with the preview-derived token performs the bulk upsert."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "Batch Event Upsert Report" in result
+    assert "created" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-10-13", newest="2026-10-14", athlete_id=None
+    )
+    mock_client.bulk_create_events.assert_awaited_once()
+    sent = mock_client.bulk_create_events.await_args.args[0]
+    assert sent[0]["external_id"] == "w42-tue"
+    assert sent[0]["start_date_local"] == "2026-10-13T08:00:00"
+    assert sent[0]["name"] == "Tuesday Threshold"
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_rejects_token_mismatch(mock_ctx, mock_client):
+    """AC3: execution with a wrong token is rejected before any network call."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(confirm_token="0" * 16), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "token" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+    mock_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_rejects_empty_token(mock_ctx, mock_client):
+    """AC3: an empty confirm_token is an execution attempt, not a preview."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=""), mock_ctx)
+
+    assert result.startswith("Error")
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_token_binds_payload(mock_ctx, mock_client):
+    """AC3: changing a draft after the preview invalidates the token."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    tampered = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Changed Title"),
+            IcuEventDraft(external_id="w42-wed", date="2026-10-14", name="Wednesday Recovery"),
+        ],
+        confirm_token=token,
+    )
+    result = await icu_batch_create_events(tampered, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "mismatch" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_per_item_created_vs_updated(mock_ctx, mock_client):
+    """AC1: the pre-read classifies updated (existing external_id) vs created."""
+    mock_client.list_events = AsyncMock(
+        return_value=[{"id": 99, "external_id": "w42-tue", "name": "Existing"}]
+    )
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 99, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "| w42-tue | updated | 99 |" in result
+    assert "| w42-wed | created | 102 |" in result
+    assert "**Updated**: 1" in result
+    assert "**Created**: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_idempotent_resubmission(mock_ctx, mock_client):
+    """AC2: re-submitting the same external_ids upserts without duplicates."""
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+    # First run: the week is empty -> everything is created.
+    mock_client.list_events = AsyncMock(return_value=[])
+
+    first_preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    first_token = _extract_preview_token(first_preview)
+    first_report = await icu_batch_create_events(_batch_params(confirm_token=first_token), mock_ctx)
+    assert "**Created**: 2" in first_report
+
+    # Second run: the same week now carries both external_ids -> all updated,
+    # and the exact same payload (same external_ids) is re-sent for upsert.
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+
+    second_preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    second_token = _extract_preview_token(second_preview)
+    second_report = await icu_batch_create_events(
+        _batch_params(confirm_token=second_token), mock_ctx
+    )
+
+    assert "**Updated**: 2" in second_report
+    assert "**Created**: 0" in second_report
+    assert mock_client.bulk_create_events.await_count == 2
+    first_payload = mock_client.bulk_create_events.await_args_list[0].args[0]
+    second_payload = mock_client.bulk_create_events.await_args_list[1].args[0]
+    assert first_payload == second_payload
+    external_ids = [item["external_id"] for item in second_payload]
+    assert len(external_ids) == len(set(external_ids)) == 2
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_missing_from_response_failed(mock_ctx, mock_client):
+    """AC1: an item missing from the API response is reported failed with a reason."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[{"id": 101, "external_id": "w42-tue"}]  # w42-wed missing
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "| w42-wed | failed | - |" in result
+    assert "missing from Intervals.icu response" in result
+    assert "**Failed**: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_api_error_all_failed(mock_ctx, mock_client):
+    """A bulk POST failure follows the handled error-string convention."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        side_effect=IntervalsAPIError("events bulk upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events bulk upstream down" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preread_error_aborts_before_write(mock_ctx, mock_client):
+    """A pre-read failure aborts the batch before any write is attempted."""
+    mock_client.list_events = AsyncMock(
+        side_effect=IntervalsAPIError("events read down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events read down" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_sanitizes_payload_before_send(mock_ctx, mock_client):
+    """The payload sent upstream carries sanitized title/description text."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value=[{"id": 101, "external_id": "w42-tue"}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(
+                external_id="w42-tue",
+                date="2026-10-13",
+                name="<script>alert('xss')</script>Threshold Day",
+                description="<img src=x onerror=alert(1)>Ride steady.",
+            )
+        ]
+    )
+    preview = await icu_batch_create_events(params, mock_ctx)
+    token = _extract_preview_token(preview)
+
+    await icu_batch_create_events(
+        IcuBatchCreateEventsInput(events=params.events, confirm_token=token), mock_ctx
+    )
+
+    sent = mock_client.bulk_create_events.await_args.args[0]
+    assert "<script>" not in sent[0]["name"]
+    assert "alert('xss')" not in sent[0]["name"]
+    assert "Threshold Day" in sent[0]["name"]
+    assert "<img" not in str(sent[0].get("description"))
+    assert "Ride steady." in str(sent[0].get("description"))
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_report_json(mock_ctx, mock_client):
+    """The JSON execute report carries counts and per-item outcomes."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value=[{"id": 101, "external_id": "w42-tue"}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuBatchCreateEventsInput(
+        events=[IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Tuesday")],
+        response_format=ResponseFormat.JSON,
+    )
+    preview = await icu_batch_create_events(params, mock_ctx)
+    data = json.loads(preview)
+    token = data["confirm_token"]
+
+    result = await icu_batch_create_events(
+        IcuBatchCreateEventsInput(
+            events=params.events, confirm_token=token, response_format=ResponseFormat.JSON
+        ),
+        mock_ctx,
+    )
+
+    report = json.loads(result)
+    assert report["created"] == 1
+    assert report["updated"] == 0
+    assert report["failed"] == 0
+    assert report["outcomes"][0]["external_id"] == "w42-tue"
+    assert report["outcomes"][0]["outcome"] == "created"
+    assert report["outcomes"][0]["event_id"] == "101"
+
+
+def test_icu_batch_create_events_annotations():
+    """The batch upsert is a non-destructive, idempotent write."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_batch_create_events"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is False
+    assert annotation.destructive_hint is False
+    assert annotation.idempotent_hint is True
+
+
+def test_icu_batch_create_events_docstring_documents_contract():
+    """The docstring documents the gate, no-rollback semantics, and batch bound."""
+    docstring = icu_batch_create_events.__doc__ or ""
+    assert "confirmation token" in docstring
+    assert "no rollback" in docstring
+    assert "50" in docstring
+    assert "external_id" in docstring
+
+
+def test_build_batch_event_payload_normalization():
+    """The payload builder pins the default start time and maps optional fields."""
+    full = _build_batch_event_payload(
+        IcuEventDraft(
+            external_id="w42-tue",
+            date="2026-10-13",
+            name="Tuesday Threshold",
+            description="3x10min @ 95%",
+            workout_doc="- 10m warmup\n3x\n- 10m 95%",
+            moving_time_seconds=3600,
+            icu_training_load=90.0,
+        )
+    )
+    assert full["external_id"] == "w42-tue"
+    assert full["start_date_local"] == "2026-10-13T08:00:00"
+    assert full["name"] == "Tuesday Threshold"
+    assert full["type"] == "Ride"
+    assert full["category"] == "WORKOUT"
+    # workout DSL is appended to the description (single-event tool pattern).
+    assert full["description"] == "3x10min @ 95%\n\n- 10m warmup\n3x\n- 10m 95%"
+    assert full["moving_time"] == 3600
+    assert full["icu_training_load"] == 90.0
+
+
+# ---------------------------------------------------------------------------
+# ICU Workout Compliance Tool (#95)
+# ---------------------------------------------------------------------------
+
+
+def _compliance_server_events() -> list[dict[str, Any]]:
+    """Planned-event fixture: two WORKOUT events and one NOTE."""
+    return [
+        {
+            "id": 101,
+            "name": "Tue VO2max",
+            "category": "WORKOUT",
+            "type": "Ride",
+            "start_date_local": "2026-10-06T08:00:00",
+            "moving_time": 3600,
+            "icu_training_load": 90,
+            "workout_doc": {"steps": [{"duration": 600}, {"duration": 600}, {"duration": 600}]},
+        },
+        {
+            "id": 102,
+            "name": "Thu Threshold",
+            "category": "WORKOUT",
+            "type": "Ride",
+            "start_date_local": "2026-10-08T08:00:00",
+            "moving_time": 3600,
+        },
+        {
+            "id": 103,
+            "name": "Rest-week note",
+            "category": "NOTE",
+            "type": "Ride",
+            "start_date_local": "2026-10-09T08:00:00",
+        },
+    ]
+
+
+def _compliance_server_activities() -> list[dict[str, Any]]:
+    """Executed-activity fixture with raw sensor values that must never leak."""
+    return [
+        {
+            "id": "a1",
+            "name": "Tue VO2max",
+            "type": "Ride",
+            "start_date_local": "2026-10-06T09:00:00",
+            "moving_time": 3500,
+            "paired_event_id": 101,
+            "compliance": 95.0,
+            "interval_summary": ["4m 115%", "3m 50%", "4m 115%"],
+            "average_heartrate": 150,
+            "average_watts": 250.0,
+        }
+    ]
+
+
+def _compliance_mock_client(mock_client: Any, mock_ctx: Any) -> None:
+    """Wire the mock client with the compliance fixtures."""
+    mock_client.list_events = AsyncMock(return_value=_compliance_server_events())
+    mock_client.list_activities = AsyncMock(return_value=_compliance_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+
+def test_format_workout_compliance_markdown():
+    """The markdown report leads with a layman-friendly adherence summary."""
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-11",
+        _compliance_server_events(),
+        _compliance_server_activities(),
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report)
+
+    assert "# Workout Compliance Report (2026-10-05 → 2026-10-11)" in result
+    assert "You planned 2 workout(s) and completed 1 — 50.0% adherence (1 missed)." in result
+    assert "| Tue VO2max |" in result
+    assert "completed" in result
+    assert "95.0" in result
+    assert "match" in result
+    assert "missed" in result
+    # The NOTE event is not classified.
+    assert "Rest-week note" not in result
+
+
+def test_format_workout_compliance_json():
+    """The JSON report is the whitelisted report model exactly."""
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-11",
+        _compliance_server_events(),
+        _compliance_server_activities(),
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    assert parsed["adherence_rate"] == 50.0
+    assert set(parsed["events"][0].keys()) == {
+        "event_id",
+        "date",
+        "name",
+        "status",
+        "compliance",
+        "structure_diff",
+    }
+
+
+def test_format_workout_compliance_empty():
+    """An empty report renders a plain no-data message."""
+    report = build_workout_compliance_report(
+        "2026-10-05", "2026-10-11", [], [], today=date(2026, 10, 11)
+    )
+    result = format_workout_compliance(report)
+    assert "No planned workouts found" in result
+
+
+def test_format_workout_compliance_all_upcoming():
+    """A report with only upcoming workouts says nothing is rateable yet."""
+    events = [_compliance_server_events()[0]]
+    events[0] = {**events[0], "start_date_local": "2026-10-20T08:00:00"}
+    report = build_workout_compliance_report(
+        "2026-10-05",
+        "2026-10-25",
+        events,
+        [],
+        today=date(2026, 10, 11),
+    )
+    result = format_workout_compliance(report)
+    assert "nothing rateable yet" in result
+    assert "upcoming" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_markdown(mock_date, mock_ctx, mock_client):
+    """AC2: the tool returns the fixture-backed compliance report."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert "Workout Compliance Report" in result
+    assert "50.0% adherence" in result
+    assert "Tue VO2max" in result
+    assert "missed" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-10-05", newest="2026-10-11", athlete_id=None
+    )
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-05", newest="2026-10-11", athlete_id=None, limit=100
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC4: JSON output is whitelist-only — no raw activity payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(
+        oldest="2026-10-05", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "total_planned",
+        "completed",
+        "missed",
+        "upcoming",
+        "adherence_rate",
+        "events",
+    }
+    for banned in (
+        "average_heartrate",
+        "average_watts",
+        "paired_event_id",
+        "interval_summary",
+        "workout_doc",
+        "moving_time",
+    ):
+        assert f'"{banned}"' not in result
+    assert "250.0" not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_rejects_over_90_days_before_network(
+    mock_ctx, mock_client
+):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetWorkoutComplianceInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.list_events.assert_not_awaited()
+    mock_client.list_activities.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_empty_range(mock_date, mock_ctx, mock_client):
+    """AC5: an empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No planned workouts found" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_no_matching_events(mock_date, mock_ctx, mock_client):
+    """AC5: events exist but none is a WORKOUT -> structured empty result."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {
+                "id": 103,
+                "name": "Rest-week note",
+                "category": "NOTE",
+                "type": "Ride",
+                "start_date_local": "2026-10-09T08:00:00",
+            }
+        ]
+    )
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No planned workouts found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    _compliance_mock_client(mock_client, mock_ctx)
+    mock_client.list_events = AsyncMock(
+        side_effect=IntervalsAPIError("events upstream down", status_code=500)
+    )
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events upstream down" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_workout_compliance_activities_error(mock_ctx, mock_client):
+    """A failure on the activities GET follows the same handled error path."""
+    _compliance_mock_client(mock_client, mock_ctx)
+    mock_client.list_activities = AsyncMock(
+        side_effect=IntervalsAPIError("activities upstream down", status_code=500)
+    )
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "activities upstream down" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_two_gets_contract(mock_date, mock_ctx, mock_client):
+    """Binding condition 5: exactly two GETs — no per-pair deep fetches."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    await icu_get_workout_compliance(params, mock_ctx)
+
+    mock_client.list_events.assert_awaited_once()
+    mock_client.list_activities.assert_awaited_once()
+    mock_client.get_activity.assert_not_awaited()
+    mock_client.get_activity_intervals.assert_not_awaited()
+    mock_client.get_event.assert_not_awaited()
+
+
+def test_icu_get_workout_compliance_read_only_annotation():
+    """The compliance read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_workout_compliance"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_workout_compliance_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _compliance_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetWorkoutComplianceInput(oldest="2026-10-05", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.build_workout_compliance_report",
+        side_effect=RuntimeError("unexpected join failure"),
+    ):
+        result = await icu_get_workout_compliance(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected join failure" in result
+
+
+def test_icu_get_workout_compliance_docstring_documents_join():
+    """The docstring documents the paired_event_id join and the 90-day bound."""
+    docstring = icu_get_workout_compliance.__doc__ or ""
+    assert "paired_event_id" in docstring
+    assert "compliance" in docstring
+    assert "90" in docstring
+
+    doc_only = _build_batch_event_payload(
+        IcuEventDraft(
+            external_id="w42-wed", date="2026-10-14", name="Recovery", workout_doc="- 30m easy"
+        )
+    )
+    assert doc_only["description"] == "- 30m easy"
+    assert "moving_time" not in doc_only
+    assert "icu_training_load" not in doc_only
+
+    bare = _build_batch_event_payload(
+        IcuEventDraft(external_id="w42-thu", date="2026-10-15", name="Rest")
+    )
+    assert "description" not in bare
+
+
+def test_derive_batch_confirm_token_is_deterministic_and_payload_bound():
+    """The token is deterministic for identical payloads and changes with any draft."""
+    payloads_a = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday"},
+    ]
+    payloads_a_again = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday"},
+    ]
+    payloads_b = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday CHANGED"},
+    ]
+
+    token_a = _derive_batch_confirm_token(payloads_a)
+    assert token_a == _derive_batch_confirm_token(payloads_a_again)
+    assert len(token_a) == 16
+    assert token_a != _derive_batch_confirm_token(payloads_b)
+    # Key order within each payload dict must not affect the canonical
+    # fingerprint (list order is semantic and does).
+    assert token_a == _derive_batch_confirm_token(
+        [{"name": "Monday", "external_id": "a"}, {"name": "Tuesday", "external_id": "b"}]
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_unexpected_response_shape(mock_ctx, mock_client):
+    """A non-list bulk response is handled as an upstream error, never silent."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value={"unexpected": "shape"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "Unexpected response shape" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Completed Sessions Tool (#96)
+# ---------------------------------------------------------------------------
+
+
+def _sessions_server_activities() -> list[dict[str, Any]]:
+    """Activity fixture with raw sensor values that must never leak."""
+    return [
+        {
+            "id": "a1",
+            "name": "Zwift Tempo",
+            "type": "VirtualRide",
+            "start_date_local": "2026-10-08T09:00:00",
+            "moving_time": 3600,
+            "icu_training_load": 85,
+            "average_heartrate": 150,
+            "average_watts": 250.0,
+            "calories": 900,
+        },
+        {
+            "id": "a2",
+            "name": "Easy Run",
+            "type": "Run",
+            "start_date_local": "2026-10-09T07:00:00",
+            "moving_time": 1800,
+        },
+        {
+            "id": "a3",
+            "name": "Outdoor Ride",
+            "type": "Ride",
+            "start_date_local": "2026-10-10T10:00:00",
+            "moving_time": 5400,
+            "icu_training_load": 120,
+        },
+    ]
+
+
+def test_format_completed_sessions_markdown():
+    """The markdown page renders whitelisted fields only, layman-friendly."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=3,
+        returned=3,
+        sessions=project_completed_sessions(_sessions_server_activities()),
+    )
+    result = format_completed_sessions(page)
+
+    assert "# Completed Sessions (2026-10-04 → 2026-10-11)" in result
+    assert "Showing 3 of 3" in result
+    assert "Zwift Tempo" in result
+    assert "1h" in result  # 3600s rendered human-readable
+    assert "85" in result
+    # Raw sensor values never surface.
+    assert "150" not in result  # average_heartrate
+    assert "250.0" not in result  # average_watts
+    assert "900" not in result  # calories
+
+
+def test_format_completed_sessions_json_whitelist_only():
+    """The JSON page is the whitelisted page model exactly."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=3,
+        returned=3,
+        sessions=project_completed_sessions(_sessions_server_activities()),
+    )
+    result = format_completed_sessions(page, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "activity_type",
+        "fetched",
+        "returned",
+        "sessions",
+    }
+    assert set(parsed["sessions"][0].keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    for banned in ("average_heartrate", "average_watts", "calories"):
+        assert f'"{banned}"' not in result
+
+
+def test_format_completed_sessions_empty():
+    """An empty page renders a plain no-data message (structured empty)."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=0,
+        returned=0,
+        sessions=[],
+    )
+    result = format_completed_sessions(page)
+    assert "No completed sessions found" in result
+
+
+def test_format_completed_sessions_empty_with_filter():
+    """An empty filtered page names the applied filter."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type="Swim",
+        fetched=3,
+        returned=0,
+        sessions=[],
+    )
+    result = format_completed_sessions(page)
+    assert "No completed sessions found" in result
+    assert "Swim" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_markdown(mock_date, mock_ctx, mock_client):
+    """AC2: the tool returns the fixture-backed whitelisted session list."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert "Completed Sessions" in result
+    assert "Zwift Tempo" in result
+    assert "150" not in result  # average_heartrate never leaks
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-04", newest="2026-10-11", athlete_id=None, limit=50
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC2: JSON output is whitelist-only — no raw activity payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "activity_type",
+        "fetched",
+        "returned",
+        "sessions",
+    }
+    assert set(parsed["sessions"][0].keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    for banned in ("average_heartrate", "average_watts", "calories", "description"):
+        assert f'"{banned}"' not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_completed_sessions_rejects_over_90_days_before_network(
+    mock_ctx, mock_client
+):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    mock_client.list_activities = AsyncMock()
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.list_activities.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_respects_page_size_cap(mock_date, mock_ctx, mock_client):
+    """AC2: pagination is respected — the page-size cap bounds the returned page."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04", newest="2026-10-11", limit=2, response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-04", newest="2026-10-11", athlete_id=None, limit=2
+    )
+    parsed = json.loads(result)
+    assert parsed["fetched"] == 3
+    assert parsed["returned"] == 2
+    assert len(parsed["sessions"]) == 2
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_type_filter_narrows_page(
+    mock_date, mock_ctx, mock_client
+):
+    """AC3: a valid enum filter keeps only the matching sessions."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=IcuActivityType.RIDE,
+        response_format=ResponseFormat.JSON,
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert parsed["activity_type"] == "Ride"
+    assert parsed["returned"] == 1
+    assert [session["id"] for session in parsed["sessions"]] == ["a3"]
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_empty_range(mock_date, mock_ctx, mock_client):
+    """AC4: an empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No completed sessions found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_completed_sessions_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    mock_client.list_activities = AsyncMock(
+        side_effect=IntervalsAPIError("activities upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "activities upstream down" in result
+
+
+def test_format_completed_sessions_filtered_markdown():
+    """A non-empty filtered page names the applied filter in the summary."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type="Ride",
+        fetched=3,
+        returned=1,
+        sessions=project_completed_sessions(
+            _sessions_server_activities(), activity_type=IcuActivityType.RIDE
+        ),
+    )
+    result = format_completed_sessions(page)
+
+    assert "Showing 1 of 3 fetched session(s), filtered to type 'Ride'." in result
+    assert "Outdoor Ride" in result
+    assert "Easy Run" not in result
+
+
+def test_icu_get_completed_sessions_read_only_annotation():
+    """The completed-sessions read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_completed_sessions"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.project_completed_sessions",
+        side_effect=RuntimeError("unexpected projection failure"),
+    ):
+        result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected projection failure" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Trends Tool (#97)
+# ---------------------------------------------------------------------------
+
+
+def _trends_server_records() -> list[dict[str, Any]]:
+    """Wellness fixture with ctl/atl/rampRate plus non-whitelisted bait."""
+    base = [
+        ("2026-09-13", 48.0, 56.0, 0.0),
+        ("2026-09-20", 50.0, 58.0, 0.1),
+        ("2026-09-27", 52.0, 60.0, 0.2),
+        ("2026-10-04", 55.0, 63.0, 0.3),
+        ("2026-10-11", 58.0, 61.0, 0.4),
+    ]
+    return [
+        {
+            "id": day,
+            "ctl": ctl,
+            "atl": atl,
+            "rampRate": ramp,
+            "restingHR": 44,
+            "hrv": 62.5,
+            "weight": 70.2,
+            "sleepSecs": 28800,
+            "readiness": 88.0,
+            "comments": "secret-comment-text",
+        }
+        for day, ctl, atl, ramp in base
+    ]
+
+
+def _trends_mock_client(mock_client: Any, mock_ctx: Any) -> None:
+    """Wire the mock client with the trends fixture."""
+    mock_client.get_wellness = AsyncMock(return_value=_trends_server_records())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+
+def test_format_trend_report_markdown():
+    """The markdown report leads with a plain-language trend direction."""
+    report = build_trend_report("2026-09-06", "2026-10-11", _trends_server_records())
+    result = format_trend_report(report)
+
+    assert "# Fitness & Fatigue Trends (2026-09-06 → 2026-10-11)" in result
+    assert "Fitness (CTL) rising steadily: 48.0 → 58.0 over the period." in result
+    assert "| 2026-09-13 | 48.0 | 56.0 | -8.0 | 0.0 |" in result
+    assert "| 2026-10-11 | 58.0 | 61.0 | -3.0 | 0.4 |" in result
+    assert "Current snapshot (2026-10-11)" in result
+    # Raw health values never surface.
+    assert "44" not in result.replace("2026", "")  # restingHR
+    assert "62.5" not in result  # hrv
+    assert "70.2" not in result  # weight
+    assert "secret-comment-text" not in result
+
+
+def test_format_trend_report_json_whitelist_only():
+    """The JSON report is the whitelisted report model exactly."""
+    report = build_trend_report("2026-09-06", "2026-10-11", _trends_server_records())
+    result = format_trend_report(report, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert parsed["granularity"] == "weekly"
+    assert set(parsed["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    assert parsed["snapshot"]["date"] == "2026-10-11"
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert f'"{banned}"' not in result
+
+
+def test_format_trend_report_empty():
+    """An empty report renders a plain no-data message (structured empty)."""
+    report = build_trend_report("2026-09-06", "2026-10-11", [])
+    result = format_trend_report(report)
+    assert "No fitness data found" in result
+
+
+def test_format_trend_report_single_point_has_no_direction_claim():
+    """With fewer than two CTL values no trend direction is claimed."""
+    report = build_trend_report("2026-10-01", "2026-10-11", [_trends_server_records()[-1]])
+    result = format_trend_report(report)
+    assert "rising" not in result
+    assert "declining" not in result
+    assert "Current snapshot (2026-10-11)" in result
+
+
+@pytest.mark.parametrize(
+    ("first_ctl", "last_ctl", "expected_phrase"),
+    [
+        (50.0, 58.0, "rising steadily"),
+        (50.0, 53.0, "rising slightly"),
+        (50.0, 51.0, "holding steady"),
+        (50.0, 47.0, "declining slightly"),
+        (50.0, 44.0, "declining steadily"),
+    ],
+)
+def test_format_trend_report_direction_phrases(first_ctl, last_ctl, expected_phrase):
+    """Every CTL delta band maps to its plain-language direction phrase."""
+    records = [
+        {"id": "2026-10-10", "ctl": first_ctl, "atl": first_ctl + 10.0},
+        {"id": "2026-10-11", "ctl": last_ctl, "atl": last_ctl + 10.0},
+    ]
+    report = build_trend_report(
+        "2026-10-01",
+        "2026-10-11",
+        records,
+        granularity=IcuTrendGranularity.DAILY,
+    )
+    result = format_trend_report(report)
+    assert f"Fitness (CTL) {expected_phrase}" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_markdown(mock_date, mock_ctx, mock_client):
+    """AC2/AC3: the tool returns the downsampled whitelisted trend report."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert "Fitness & Fatigue Trends" in result
+    assert "rising steadily" in result
+    assert "secret-comment-text" not in result
+    mock_client.get_wellness.assert_awaited_once_with(
+        oldest="2026-09-06", newest="2026-10-11", athlete_id=None
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC3: JSON output is whitelist-only — no raw wellness payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(
+        oldest="2026-09-06", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "granularity",
+        "points",
+        "snapshot",
+    }
+    assert set(parsed["points"][0].keys()) == {
+        "date",
+        "ctl",
+        "atl",
+        "tsb",
+        "ramp_rate",
+    }
+    for banned in ("restingHR", "hrv", "weight", "sleepSecs", "readiness", "comments"):
+        assert f'"{banned}"' not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_trends_rejects_over_90_days_before_network(mock_ctx, mock_client):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    _trends_mock_client(mock_client, mock_ctx)
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetTrendsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.get_wellness.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_weekly_point_bound_at_max_window(mock_date, mock_ctx, mock_client):
+    """AC2: at the 90-day max window the weekly series stays within 13 points."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    records = [
+        {
+            "id": (date(2026, 7, 13) + timedelta(days=offset)).isoformat(),
+            "ctl": 50.0 + offset,
+            "atl": 60.0,
+            "rampRate": 0.1,
+        }
+        for offset in range(91)
+    ]
+    mock_client.get_wellness = AsyncMock(return_value=records)
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetTrendsInput(
+        oldest="2026-07-13", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert len(parsed["points"]) <= 13
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_daily_granularity_passthrough(mock_date, mock_ctx, mock_client):
+    """AC4: an explicit daily granularity is honored end-to-end."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(
+        oldest="2026-09-06",
+        newest="2026-10-11",
+        granularity=IcuTrendGranularity.DAILY,
+        response_format=ResponseFormat.JSON,
+    )
+    result = await icu_get_trends(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert parsed["granularity"] == "daily"
+    assert [point["date"] for point in parsed["points"]] == [
+        "2026-09-13",
+        "2026-09-20",
+        "2026-09-27",
+        "2026-10-04",
+        "2026-10-11",
+    ]
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_empty_range(mock_date, mock_ctx, mock_client):
+    """An empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.get_wellness = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No fitness data found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_trends_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    _trends_mock_client(mock_client, mock_ctx)
+    mock_client.get_wellness = AsyncMock(
+        side_effect=IntervalsAPIError("wellness upstream down", status_code=500)
+    )
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    result = await icu_get_trends(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "wellness upstream down" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_trends_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    _trends_mock_client(mock_client, mock_ctx)
+
+    params = IcuGetTrendsInput(oldest="2026-09-06", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.build_trend_report",
+        side_effect=RuntimeError("unexpected trend failure"),
+    ):
+        result = await icu_get_trends(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected trend failure" in result
+
+
+def test_icu_get_trends_read_only_annotation():
+    """The trends read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_trends"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+def test_icu_get_trends_docstring_documents_tsb_semantics():
+    """AC3: the docstring documents the tsb = ctl - atl semantics and the bound."""
+    docstring = icu_get_trends.__doc__ or ""
+    assert "ctl - atl" in docstring
+    assert "90" in docstring

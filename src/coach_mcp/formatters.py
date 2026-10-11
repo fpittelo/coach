@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any, cast
 from coach_mcp.models import ResponseFormat
 
 if TYPE_CHECKING:
-    from coach_mcp.models import WellnessDayProjection
+    from coach_mcp.models import (
+        CompletedSessionsPage,
+        TrendReport,
+        WellnessDayProjection,
+        WorkoutComplianceReport,
+    )
 
 
 def to_json_str(data: Any) -> str:
@@ -574,6 +579,161 @@ def format_workouts(workouts: list[dict[str, Any]], fmt_json: bool = False) -> s
             lines.append(f"- **Description**: {desc}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool = False) -> str:
+    """Format the planned-vs-executed compliance report (``icu_get_workout_compliance``).
+
+    Both output shapes render the whitelisted report only — the raw executed
+    activity payload is never surfaced (epic #82 binding security condition 2).
+    The markdown shape leads with a plain-language adherence summary line.
+    """
+    if fmt_json:
+        return to_json_str(report.model_dump())
+
+    if not report.events:
+        return f"No planned workouts found for {report.oldest} → {report.newest}."
+
+    if report.adherence_rate is not None:
+        summary = (
+            f"You planned {report.total_planned} workout(s) and completed "
+            f"{report.completed} — {report.adherence_rate}% adherence "
+            f"({report.missed} missed)."
+        )
+    else:
+        summary = f"{report.upcoming} planned workout(s) upcoming — nothing rateable yet."
+
+    lines = [
+        f"# Workout Compliance Report ({report.oldest} → {report.newest})",
+        "",
+        summary,
+        "",
+        "Executed workouts are paired with the planned calendar events via "
+        "Intervals.icu's native paired_event_id link; Compliance is ICU's own "
+        "adherence score for the paired activity.",
+        "",
+        "| Date | Workout | Status | Compliance (ICU) | Structure |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for event in report.events:
+        compliance = f"{event.compliance:.1f}" if event.compliance is not None else "-"
+        lines.append(
+            f"| {event.date} | {event.name} | {event.status} | {compliance} "
+            f"| {event.structure_diff} |"
+        )
+    return "\n".join(lines)
+
+
+def format_completed_sessions(page: "CompletedSessionsPage", fmt_json: bool = False) -> str:
+    """Format the bounded completed-sessions listing (``icu_get_completed_sessions``).
+
+    Both output shapes render the whitelisted page only — the raw activity
+    payload is never surfaced (epic #82 binding security condition 2). The
+    markdown shape leads with a plain-language summary of the page.
+    """
+    if fmt_json:
+        return to_json_str(page.model_dump())
+
+    if not page.sessions:
+        filter_note = f" (type: {page.activity_type})" if page.activity_type else ""
+        return f"No completed sessions found for {page.oldest} → {page.newest}{filter_note}."
+
+    summary = f"Showing {page.returned} of {page.fetched} fetched session(s)"
+    if page.activity_type:
+        summary += f", filtered to type '{page.activity_type}'"
+    summary += "."
+
+    lines = [
+        f"# Completed Sessions ({page.oldest} → {page.newest})",
+        "",
+        summary,
+        "",
+        "| Date | Session | Type | Duration | Load (TSS) |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for session in page.sessions:
+        duration = (
+            _format_duration(session.duration_seconds)
+            if session.duration_seconds is not None
+            else "-"
+        )
+        load = f"{session.load:.0f}" if session.load is not None else "-"
+        lines.append(
+            f"| {session.date} | [{session.title}](id:{session.id}) | {session.type} "
+            f"| {duration} | {load} |"
+        )
+    return "\n".join(lines)
+
+
+def _trend_direction_phrase(delta: float) -> str:
+    """Plain-language CTL direction phrase for a first → last delta."""
+    if delta >= 5:
+        return "rising steadily"
+    if delta > 2:
+        return "rising slightly"
+    if delta < -5:
+        return "declining steadily"
+    if delta < -2:
+        return "declining slightly"
+    return "holding steady"
+
+
+def format_trend_report(report: "TrendReport", fmt_json: bool = False) -> str:
+    """Format the bounded fitness/fatigue trend report (``icu_get_trends``).
+
+    Both output shapes render the whitelisted report only — the raw wellness
+    payload is never surfaced (epic #82 binding security condition 2). The
+    markdown shape leads with a plain-language trend direction and the
+    current form status alongside the structured series.
+    """
+    if fmt_json:
+        return to_json_str(report.model_dump())
+
+    if report.snapshot is None:
+        return f"No fitness data found for {report.oldest} → {report.newest}."
+
+    lines: list[str] = [
+        f"# Fitness & Fatigue Trends ({report.oldest} → {report.newest})",
+        "",
+    ]
+
+    ctl_values = [point.ctl for point in report.points if point.ctl is not None]
+    if len(ctl_values) >= 2:
+        direction = _trend_direction_phrase(ctl_values[-1] - ctl_values[0])
+        lines.append(
+            f"Fitness (CTL) {direction}: {ctl_values[0]:.1f} → {ctl_values[-1]:.1f} "
+            "over the period."
+        )
+    if report.snapshot.tsb is not None:
+        lines.append(
+            f"Form (TSB) currently {report.snapshot.tsb:.1f} — {_form_status(report.snapshot.tsb)}."
+        )
+    lines.append("")
+
+    lines.extend(
+        [
+            "| Date | Fitness (CTL) | Fatigue (ATL) | Form (TSB) | Ramp Rate |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for point in report.points:
+        lines.append(
+            f"| {point.date} | {_fmt_num(point.ctl)} | {_fmt_num(point.atl)} | "
+            f"{_fmt_num(point.tsb)} | {_fmt_num(point.ramp_rate)} |"
+        )
+
+    snapshot = report.snapshot
+    lines.extend(
+        [
+            "",
+            (
+                f"Current snapshot ({snapshot.date}): CTL {_fmt_num(snapshot.ctl)}, "
+                f"ATL {_fmt_num(snapshot.atl)}, TSB {_fmt_num(snapshot.tsb)}, "
+                f"ramp rate {_fmt_num(snapshot.ramp_rate)}."
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 

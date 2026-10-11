@@ -17,16 +17,19 @@ import asyncio
 import io
 import json
 import logging
+import re
 import sys
 from collections.abc import Generator
 from contextlib import redirect_stdout
 from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
 
 from coach_mcp.audit import audit_logger, audit_tool_call, emit_auth_failure
+from coach_mcp.client import IntervalsAPIError
 from coach_mcp.config import settings
 from coach_mcp.models import (
     GetActivityInput,
@@ -578,3 +581,134 @@ async def test_athlete_id_extracted_from_real_server_model(audit_records):
 
     entry = _entries(audit_records)[0]
     assert entry["athlete_id"] == "i12345"
+
+
+# ---------------------------------------------------------------------------
+# Batch event upsert audit (#94)
+# ---------------------------------------------------------------------------
+
+
+def _batch_audit_params() -> Any:  # noqa: ANN401
+    """Build a one-draft batch input for audit tests."""
+    from coach_mcp.models import IcuBatchCreateEventsInput, IcuEventDraft
+
+    return IcuBatchCreateEventsInput(
+        events=[IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Tuesday")]
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_create_events_both_phases_and_outcomes_audited(audit_records, monkeypatch):
+    """AC6: preview and execute phases each emit a tool_call entry; the execute
+    phase also emits a batch_outcome entry with per-item outcomes."""
+    from coach_mcp.models import IcuBatchCreateEventsInput
+    from coach_mcp.server import icu_batch_create_events
+
+    monkeypatch.setattr(settings, "intervals_athlete_id", "0")
+
+    mock_client = MagicMock()
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value=[{"id": 101, "external_id": "w42-tue"}])
+    ctx = MagicMock()
+    ctx.request_context.lifespan_state = {"client": mock_client}
+
+    params = _batch_audit_params()
+    preview = await icu_batch_create_events(params, ctx)
+    match = re.search(r"`([0-9a-f]{16})`", preview)
+    assert match, f"no token in preview: {preview}"
+
+    result = await icu_batch_create_events(
+        IcuBatchCreateEventsInput(events=params.events, confirm_token=match.group(1)), ctx
+    )
+    assert "Batch Event Upsert Report" in result
+
+    entries = _entries(audit_records)
+    tool_calls = [
+        e for e in entries if e["event"] == "tool_call" and e["tool"] == "icu_batch_create_events"
+    ]
+    assert len(tool_calls) == 2  # preview phase + execute phase
+    assert all(e["status"] == "success" for e in tool_calls)
+
+    outcome_entries = [e for e in entries if e["event"] == "batch_outcome"]
+    assert len(outcome_entries) == 1
+    outcome_entry = outcome_entries[0]
+    assert outcome_entry["tool"] == "icu_batch_create_events"
+    assert outcome_entry["status"] == "success"
+    assert outcome_entry["outcomes"] == [
+        {"external_id": "w42-tue", "outcome": "created", "event_id": "101", "reason": None}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_create_events_failure_audited_with_per_item_outcomes(
+    audit_records, monkeypatch
+):
+    """AC6: a failed batch execution records per-item failed outcomes at ERROR."""
+    from coach_mcp.models import IcuBatchCreateEventsInput
+    from coach_mcp.server import icu_batch_create_events
+
+    monkeypatch.setattr(settings, "intervals_athlete_id", "0")
+
+    mock_client = MagicMock()
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        side_effect=IntervalsAPIError("bulk upstream down", status_code=500)
+    )
+    ctx = MagicMock()
+    ctx.request_context.lifespan_state = {"client": mock_client}
+
+    params = _batch_audit_params()
+    preview = await icu_batch_create_events(params, ctx)
+    match = re.search(r"`([0-9a-f]{16})`", preview)
+    assert match, f"no token in preview: {preview}"
+
+    result = await icu_batch_create_events(
+        IcuBatchCreateEventsInput(events=params.events, confirm_token=match.group(1)), ctx
+    )
+    assert result.startswith("Error")
+
+    entries = _entries(audit_records)
+    outcome_entries = [e for e in entries if e["event"] == "batch_outcome"]
+    assert len(outcome_entries) == 1
+    outcome_entry = outcome_entries[0]
+    assert outcome_entry["status"] == "error"
+    assert outcome_entry["outcomes"] == [
+        {
+            "external_id": "w42-tue",
+            "outcome": "failed",
+            "event_id": None,
+            "reason": "bulk upstream down status_code=500",
+        }
+    ]
+    matching_records = [
+        r for r in audit_records if "batch_outcome" in r.getMessage() and r.levelno == logging.ERROR
+    ]
+    assert len(matching_records) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_create_events_token_mismatch_audited_at_error(audit_records, monkeypatch):
+    """AC3/AC6: a confirmation-gate rejection is audited as a failed write."""
+    from coach_mcp.models import IcuBatchCreateEventsInput
+    from coach_mcp.server import icu_batch_create_events
+
+    monkeypatch.setattr(settings, "intervals_athlete_id", "0")
+
+    mock_client = MagicMock()
+    mock_client.bulk_create_events = AsyncMock()
+    ctx = MagicMock()
+    ctx.request_context.lifespan_state = {"client": mock_client}
+
+    params = IcuBatchCreateEventsInput(events=_batch_audit_params().events, confirm_token="f" * 16)
+    result = await icu_batch_create_events(params, ctx)
+
+    assert result.startswith("Error")
+    mock_client.bulk_create_events.assert_not_awaited()
+    entries = _entries(audit_records)
+    tool_calls = [
+        e for e in entries if e["event"] == "tool_call" and e["tool"] == "icu_batch_create_events"
+    ]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["status"] == "error"
+    # No batch_outcome entry: nothing was executed.
+    assert [e for e in entries if e["event"] == "batch_outcome"] == []
