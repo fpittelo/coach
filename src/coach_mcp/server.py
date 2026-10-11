@@ -20,6 +20,7 @@ from coach_mcp.auth import BearerTokenMiddleware
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
 from coach_mcp.formatters import (
+    _escape_md_cell,
     format_activities_list,
     format_activity_detail,
     format_activity_streams,
@@ -773,9 +774,13 @@ def _format_batch_preview(
         "|---|-------------|------|-------|------|----------|",
     ]
     for idx, draft in enumerate(params.events, start=1):
+        # external_id, date, and category are pattern- or Literal-validated at
+        # the IcuEventDraft boundary (no markdown-significant characters can
+        # survive validation); name and type are caller-controlled free text,
+        # so they are escaped before table interpolation (#113).
         lines.append(
-            f"| {idx} | {draft.external_id} | {draft.date} | {draft.name} "
-            f"| {draft.type} | {draft.category} |"
+            f"| {idx} | {draft.external_id} | {draft.date} | {_escape_md_cell(draft.name)} "
+            f"| {_escape_md_cell(draft.type)} | {draft.category} |"
         )
     lines.extend(
         [
@@ -818,6 +823,14 @@ def _format_batch_outcomes(
         "|--------------|---------|----------|--------|",
     ]
     for outcome in outcomes:
+        # Documented safe (#113): every cell in this row is server-generated
+        # or validated — external_id passed the IcuEventDraft character
+        # pattern at ingestion, outcome is a Literal enum, event_id is ICU's
+        # numeric ID, and reason reaches this table only as the
+        # server-generated "missing from Intervals.icu response" constant
+        # (exception-path reasons go to the audit emitter, never this
+        # table). If a future change renders upstream-derived reasons here,
+        # they must be escaped with `_escape_md_cell`.
         lines.append(
             f"| {outcome.external_id} | {outcome.outcome} | {outcome.event_id or '-'} "
             f"| {outcome.reason or '-'} |"

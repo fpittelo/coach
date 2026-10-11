@@ -1729,6 +1729,43 @@ def test_format_activities_list_empty():
     assert "No activities found" in result
 
 
+def test_format_activities_list_hostile_name_renders_inert():
+    """A hostile activity name cannot break the table or inject markdown (#113)."""
+    activities = [
+        {
+            "id": "act1",
+            "name": "| injected | [x](http://evil)",
+            "type": "Ride",
+            "start_date_local": "2026-08-22T09:00:00",
+            "moving_time": 3600,
+        },
+        {
+            "id": "act2",
+            "name": "Legit\nSneaky [y](http://evil2)",
+            "type": "Ride",
+            "start_date_local": "2026-08-23T09:00:00",
+            "moving_time": 3600,
+        },
+    ]
+    result = format_activities_list(activities, fmt_json=False)
+
+    # Table structure preserved: every row keeps exactly nine cells.
+    for line in result.splitlines():
+        if line.startswith("|"):
+            assert len(re.findall(r"(?<!\\)\|", line)) == 9
+    # No link markdown survives: brackets are escaped, the target stays inert.
+    assert "[x](http://evil)" not in result
+    assert "[y](http://evil2)" not in result
+    assert "\\[x\\](http://evil)" in result
+    # Newlines are flattened so the row stays on one line.
+    assert "Legit Sneaky" in result
+    assert "Legit\nSneaky" not in result
+    # The benign id: link structure is preserved around the escaped title.
+    assert "](id:act1)" in result
+    # The hostile text itself is still visible (escaped, not stripped).
+    assert "injected" in result
+
+
 def test_format_activity_detail_markdown():
     """Test activity detail markdown formatter."""
     act = {
@@ -1969,6 +2006,40 @@ def test_format_events_list_empty():
     assert "No planned events" in result
 
 
+def test_format_events_list_hostile_name_and_desc_render_inert():
+    """A hostile event name/description cannot break the table or inject markdown (#113)."""
+    events = [
+        {
+            "id": "evt1",
+            "name": "| injected | [x](http://evil)",
+            "category": "WORKOUT",
+            "type": "Ride",
+            "start_date_local": "2026-08-22T08:00:00",
+            "moving_time": 3600,
+            "icu_training_load": 120,
+            "description": "Steady | pace\n[y](http://evil2) " + "z" * 45,
+        },
+    ]
+    result = format_events_list(events, fmt_json=False)
+
+    # Table structure preserved: every row keeps exactly eight cells.
+    for line in result.splitlines():
+        if line.startswith("|"):
+            assert len(re.findall(r"(?<!\\)\|", line)) == 8
+    # No link markdown survives: brackets are escaped, the target stays inert.
+    assert "[x](http://evil)" not in result
+    assert "[y](http://evil2)" not in result
+    assert "\\[x\\](http://evil)" in result
+    assert "\\[y\\](http://evil2)" in result
+    # The description's pipe is escaped so it cannot split the row.
+    assert "Steady \\| pace" in result
+    # The description stays truncated at 40 characters (before escaping).
+    assert "zzzzzzzz" in result
+    assert "zzzzzzzzz" not in result
+    # The hostile text itself is still visible (escaped, not stripped).
+    assert "injected" in result
+
+
 def test_format_folders_markdown():
     """Test folders markdown formatter."""
     folders = [{"id": "folder1", "name": "Base", "children": []}]
@@ -2116,6 +2187,39 @@ async def test_icu_batch_create_events_preview_returns_token(mock_ctx, mock_clie
     assert "Tuesday Threshold" in result
     token = _extract_preview_token(result)
     assert len(token) == 16
+    mock_client.bulk_create_events.assert_not_awaited()
+    mock_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preview_hostile_draft_renders_inert(mock_ctx, mock_client):
+    """A hostile draft title/type cannot break the preview table or inject markdown (#113)."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(
+                external_id="w42-tue",
+                date="2026-10-13",
+                name="| injected | [x](http://evil)",
+                type="Ride | [y](http://evil2)",
+            )
+        ]
+    )
+    result = await icu_batch_create_events(params, mock_ctx)
+
+    # Table structure preserved: every row keeps exactly seven cells.
+    for line in result.splitlines():
+        if line.startswith("|"):
+            assert len(re.findall(r"(?<!\\)\|", line)) == 7
+    # No link markdown survives: brackets are escaped, the target stays inert.
+    assert "[x](http://evil)" not in result
+    assert "[y](http://evil2)" not in result
+    assert "\\[x\\](http://evil)" in result
+    assert "\\[y\\](http://evil2)" in result
+    # The hostile text itself is still visible (escaped, not stripped).
+    assert "injected" in result
+    # The preview stays a dry-run: nothing is written.
     mock_client.bulk_create_events.assert_not_awaited()
     mock_client.list_events.assert_not_awaited()
 
