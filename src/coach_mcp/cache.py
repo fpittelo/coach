@@ -14,6 +14,7 @@ class TTLCache:
     """
 
     def __init__(self, default_ttl: int = 300) -> None:
+        """Store the default TTL in seconds (negative means never expire)."""
         self.default_ttl = default_ttl
         self._store: dict[str, tuple[Any, float]] = {}
         self._lock = asyncio.Lock()
