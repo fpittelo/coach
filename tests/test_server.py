@@ -1,7 +1,9 @@
 """Comprehensive tests for Coach MCP MCPServer handlers and formatters."""
 
 import json
+import re
 from datetime import date
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,6 +49,8 @@ from coach_mcp.models import (
     GetSportSettingsInput,
     GetWellnessInput,
     IcuAddSessionCommentInput,
+    IcuBatchCreateEventsInput,
+    IcuEventDraft,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -61,8 +65,11 @@ from coach_mcp.models import (
     project_wellness_days,
 )
 from coach_mcp.server import (
+    _build_batch_event_payload,
+    _derive_batch_confirm_token,
     _get_client_from_ctx,
     icu_add_session_comment,
+    icu_batch_create_events,
     icu_get_wellness,
     intervals_create_activity,
     intervals_create_event,
@@ -153,6 +160,7 @@ def test_tools_registered():
         "intervals_list_workouts",
         "icu_get_wellness",
         "icu_add_session_comment",
+        "icu_batch_create_events",
     ]
 
     for expected in expected_tools:
@@ -2048,3 +2056,421 @@ def test_format_power_model_alternative_keys():
     assert "21000" in result
     assert "1250" in result
     assert "CP Model" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Events Tool (#94)
+# ---------------------------------------------------------------------------
+
+
+def _batch_params(**overrides: Any) -> IcuBatchCreateEventsInput:
+    """Build a two-draft batch input with optional overrides."""
+    drafts = [
+        IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Tuesday Threshold"),
+        IcuEventDraft(external_id="w42-wed", date="2026-10-14", name="Wednesday Recovery"),
+    ]
+    kwargs: dict[str, Any] = {"events": drafts}
+    kwargs.update(overrides)
+    return IcuBatchCreateEventsInput(**kwargs)
+
+
+def _extract_preview_token(result: str) -> str:
+    """Extract the confirmation token from a markdown preview response."""
+    match = re.search(r"Confirmation token\*\*: `([0-9a-f]{16})`", result)
+    assert match, f"no confirmation token in preview: {result}"
+    return match.group(1)
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preview_returns_token(mock_ctx, mock_client):
+    """AC3: the preview phase returns a confirmation token and writes nothing."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(), mock_ctx)
+
+    assert "Batch Event Preview" in result
+    assert "dry-run" in result
+    assert "w42-tue" in result
+    assert "Tuesday Threshold" in result
+    token = _extract_preview_token(result)
+    assert len(token) == 16
+    mock_client.bulk_create_events.assert_not_awaited()
+    mock_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preview_json(mock_ctx, mock_client):
+    """The JSON preview carries the token and the normalized payloads."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = _batch_params(response_format=ResponseFormat.JSON)
+    result = await icu_batch_create_events(params, mock_ctx)
+
+    data = json.loads(result)
+    assert data["phase"] == "preview"
+    assert len(data["confirm_token"]) == 16
+    assert data["item_count"] == 2
+    assert data["events"][0]["external_id"] == "w42-tue"
+    assert data["events"][0]["start_date_local"] == "2026-10-13T08:00:00"
+    assert data["events"][0]["name"] == "Tuesday Threshold"
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_executes_with_valid_token(mock_ctx, mock_client):
+    """AC1/AC3: execution with the preview-derived token performs the bulk upsert."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "Batch Event Upsert Report" in result
+    assert "created" in result
+    mock_client.list_events.assert_awaited_once_with(
+        oldest="2026-10-13", newest="2026-10-14", athlete_id=None
+    )
+    mock_client.bulk_create_events.assert_awaited_once()
+    sent = mock_client.bulk_create_events.await_args.args[0]
+    assert sent[0]["external_id"] == "w42-tue"
+    assert sent[0]["start_date_local"] == "2026-10-13T08:00:00"
+    assert sent[0]["name"] == "Tuesday Threshold"
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_rejects_token_mismatch(mock_ctx, mock_client):
+    """AC3: execution with a wrong token is rejected before any network call."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(confirm_token="0" * 16), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "token" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+    mock_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_rejects_empty_token(mock_ctx, mock_client):
+    """AC3: an empty confirm_token is an execution attempt, not a preview."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=""), mock_ctx)
+
+    assert result.startswith("Error")
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_token_binds_payload(mock_ctx, mock_client):
+    """AC3: changing a draft after the preview invalidates the token."""
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    tampered = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Changed Title"),
+            IcuEventDraft(external_id="w42-wed", date="2026-10-14", name="Wednesday Recovery"),
+        ],
+        confirm_token=token,
+    )
+    result = await icu_batch_create_events(tampered, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "mismatch" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_per_item_created_vs_updated(mock_ctx, mock_client):
+    """AC1: the pre-read classifies updated (existing external_id) vs created."""
+    mock_client.list_events = AsyncMock(
+        return_value=[{"id": 99, "external_id": "w42-tue", "name": "Existing"}]
+    )
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 99, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "| w42-tue | updated | 99 |" in result
+    assert "| w42-wed | created | 102 |" in result
+    assert "**Updated**: 1" in result
+    assert "**Created**: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_idempotent_resubmission(mock_ctx, mock_client):
+    """AC2: re-submitting the same external_ids upserts without duplicates."""
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+    # First run: the week is empty -> everything is created.
+    mock_client.list_events = AsyncMock(return_value=[])
+
+    first_preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    first_token = _extract_preview_token(first_preview)
+    first_report = await icu_batch_create_events(_batch_params(confirm_token=first_token), mock_ctx)
+    assert "**Created**: 2" in first_report
+
+    # Second run: the same week now carries both external_ids -> all updated,
+    # and the exact same payload (same external_ids) is re-sent for upsert.
+    mock_client.list_events = AsyncMock(
+        return_value=[
+            {"id": 101, "external_id": "w42-tue"},
+            {"id": 102, "external_id": "w42-wed"},
+        ]
+    )
+
+    second_preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    second_token = _extract_preview_token(second_preview)
+    second_report = await icu_batch_create_events(
+        _batch_params(confirm_token=second_token), mock_ctx
+    )
+
+    assert "**Updated**: 2" in second_report
+    assert "**Created**: 0" in second_report
+    assert mock_client.bulk_create_events.await_count == 2
+    first_payload = mock_client.bulk_create_events.await_args_list[0].args[0]
+    second_payload = mock_client.bulk_create_events.await_args_list[1].args[0]
+    assert first_payload == second_payload
+    external_ids = [item["external_id"] for item in second_payload]
+    assert len(external_ids) == len(set(external_ids)) == 2
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_missing_from_response_failed(mock_ctx, mock_client):
+    """AC1: an item missing from the API response is reported failed with a reason."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        return_value=[{"id": 101, "external_id": "w42-tue"}]  # w42-wed missing
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert "| w42-wed | failed | - |" in result
+    assert "missing from Intervals.icu response" in result
+    assert "**Failed**: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_api_error_all_failed(mock_ctx, mock_client):
+    """A bulk POST failure follows the handled error-string convention."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(
+        side_effect=IntervalsAPIError("events bulk upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events bulk upstream down" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_preread_error_aborts_before_write(mock_ctx, mock_client):
+    """A pre-read failure aborts the batch before any write is attempted."""
+    mock_client.list_events = AsyncMock(
+        side_effect=IntervalsAPIError("events read down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "events read down" in result
+    mock_client.bulk_create_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_sanitizes_payload_before_send(mock_ctx, mock_client):
+    """The payload sent upstream carries sanitized title/description text."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value=[{"id": 101, "external_id": "w42-tue"}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(
+                external_id="w42-tue",
+                date="2026-10-13",
+                name="<script>alert('xss')</script>Threshold Day",
+                description="<img src=x onerror=alert(1)>Ride steady.",
+            )
+        ]
+    )
+    preview = await icu_batch_create_events(params, mock_ctx)
+    token = _extract_preview_token(preview)
+
+    await icu_batch_create_events(
+        IcuBatchCreateEventsInput(events=params.events, confirm_token=token), mock_ctx
+    )
+
+    sent = mock_client.bulk_create_events.await_args.args[0]
+    assert "<script>" not in sent[0]["name"]
+    assert "alert('xss')" not in sent[0]["name"]
+    assert "Threshold Day" in sent[0]["name"]
+    assert "<img" not in str(sent[0].get("description"))
+    assert "Ride steady." in str(sent[0].get("description"))
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_report_json(mock_ctx, mock_client):
+    """The JSON execute report carries counts and per-item outcomes."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value=[{"id": 101, "external_id": "w42-tue"}])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuBatchCreateEventsInput(
+        events=[IcuEventDraft(external_id="w42-tue", date="2026-10-13", name="Tuesday")],
+        response_format=ResponseFormat.JSON,
+    )
+    preview = await icu_batch_create_events(params, mock_ctx)
+    data = json.loads(preview)
+    token = data["confirm_token"]
+
+    result = await icu_batch_create_events(
+        IcuBatchCreateEventsInput(
+            events=params.events, confirm_token=token, response_format=ResponseFormat.JSON
+        ),
+        mock_ctx,
+    )
+
+    report = json.loads(result)
+    assert report["created"] == 1
+    assert report["updated"] == 0
+    assert report["failed"] == 0
+    assert report["outcomes"][0]["external_id"] == "w42-tue"
+    assert report["outcomes"][0]["outcome"] == "created"
+    assert report["outcomes"][0]["event_id"] == "101"
+
+
+def test_icu_batch_create_events_annotations():
+    """The batch upsert is a non-destructive, idempotent write."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_batch_create_events"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is False
+    assert annotation.destructive_hint is False
+    assert annotation.idempotent_hint is True
+
+
+def test_icu_batch_create_events_docstring_documents_contract():
+    """The docstring documents the gate, no-rollback semantics, and batch bound."""
+    docstring = icu_batch_create_events.__doc__ or ""
+    assert "confirmation token" in docstring
+    assert "no rollback" in docstring
+    assert "50" in docstring
+    assert "external_id" in docstring
+
+
+def test_build_batch_event_payload_normalization():
+    """The payload builder pins the default start time and maps optional fields."""
+    full = _build_batch_event_payload(
+        IcuEventDraft(
+            external_id="w42-tue",
+            date="2026-10-13",
+            name="Tuesday Threshold",
+            description="3x10min @ 95%",
+            workout_doc="- 10m warmup\n3x\n- 10m 95%",
+            moving_time_seconds=3600,
+            icu_training_load=90.0,
+        )
+    )
+    assert full["external_id"] == "w42-tue"
+    assert full["start_date_local"] == "2026-10-13T08:00:00"
+    assert full["name"] == "Tuesday Threshold"
+    assert full["type"] == "Ride"
+    assert full["category"] == "WORKOUT"
+    # workout DSL is appended to the description (single-event tool pattern).
+    assert full["description"] == "3x10min @ 95%\n\n- 10m warmup\n3x\n- 10m 95%"
+    assert full["moving_time"] == 3600
+    assert full["icu_training_load"] == 90.0
+
+    doc_only = _build_batch_event_payload(
+        IcuEventDraft(
+            external_id="w42-wed", date="2026-10-14", name="Recovery", workout_doc="- 30m easy"
+        )
+    )
+    assert doc_only["description"] == "- 30m easy"
+    assert "moving_time" not in doc_only
+    assert "icu_training_load" not in doc_only
+
+    bare = _build_batch_event_payload(
+        IcuEventDraft(external_id="w42-thu", date="2026-10-15", name="Rest")
+    )
+    assert "description" not in bare
+
+
+def test_derive_batch_confirm_token_is_deterministic_and_payload_bound():
+    """The token is deterministic for identical payloads and changes with any draft."""
+    payloads_a = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday"},
+    ]
+    payloads_a_again = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday"},
+    ]
+    payloads_b = [
+        {"external_id": "a", "name": "Monday"},
+        {"external_id": "b", "name": "Tuesday CHANGED"},
+    ]
+
+    token_a = _derive_batch_confirm_token(payloads_a)
+    assert token_a == _derive_batch_confirm_token(payloads_a_again)
+    assert len(token_a) == 16
+    assert token_a != _derive_batch_confirm_token(payloads_b)
+    # Key order within each payload dict must not affect the canonical
+    # fingerprint (list order is semantic and does).
+    assert token_a == _derive_batch_confirm_token(
+        [{"name": "Monday", "external_id": "a"}, {"name": "Tuesday", "external_id": "b"}]
+    )
+
+
+@pytest.mark.asyncio
+async def test_icu_batch_create_events_unexpected_response_shape(mock_ctx, mock_client):
+    """A non-list bulk response is handled as an upstream error, never silent."""
+    mock_client.list_events = AsyncMock(return_value=[])
+    mock_client.bulk_create_events = AsyncMock(return_value={"unexpected": "shape"})
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    preview = await icu_batch_create_events(_batch_params(), mock_ctx)
+    token = _extract_preview_token(preview)
+
+    result = await icu_batch_create_events(_batch_params(confirm_token=token), mock_ctx)
+
+    assert result.startswith("Error")
+    assert "Unexpected response shape" in result

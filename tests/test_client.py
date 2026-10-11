@@ -1477,3 +1477,82 @@ async def test_add_activity_message_not_found(client: IntervalsClient):
         with pytest.raises(IntervalsNotFoundError):
             await client.add_activity_message("nope", "Great debrief.")
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Bulk event upsert (#94)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_success(client: IntervalsClient):
+    """Test bulk event upsert POSTs the payload array to events/bulk with
+    external_id upsert semantics (verified against the official OpenAPI spec)."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        route = respx_mock.post("/athlete/0/events/bulk").respond(
+            200,
+            json=[
+                {"id": 101, "external_id": "w42-tue"},
+                {"id": 102, "external_id": "w42-wed"},
+            ],
+        )
+
+        payloads = [
+            {"external_id": "w42-tue", "start_date_local": "2026-10-13T08:00:00", "name": "Tue"},
+            {"external_id": "w42-wed", "start_date_local": "2026-10-14T08:00:00", "name": "Wed"},
+        ]
+        result = await client.bulk_create_events(payloads)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["external_id"] == "w42-tue"
+        request = route.calls.last.request
+        assert json.loads(request.content) == payloads
+        # upsert=true reconciles on external_id; upsertOnUid is ignored when
+        # upsert=true but required by the spec; no plan_applied stamping.
+        assert request.url.params["upsert"] == "true"
+        assert request.url.params["upsertOnUid"] == "false"
+        assert request.url.params["updatePlanApplied"] == "false"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_invalidates_events_cache():
+    """Bulk upsert should invalidate the events list cache."""
+    bulk_client = IntervalsClient(
+        api_key="test_key",
+        athlete_id="0",
+        base_url=BASE_URL,
+        max_retries=1,
+        cache_ttl_volatile=300,
+    )
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        get_route = respx_mock.get("/athlete/0/events?oldest=2026-10-13&newest=2026-10-14").respond(
+            200,
+            json=[{"id": "evt1", "name": "Original Event"}],
+        )
+        post_route = respx_mock.post("/athlete/0/events/bulk").respond(
+            200,
+            json=[{"id": 101, "external_id": "w42-tue"}],
+        )
+
+        first = await bulk_client.list_events(oldest="2026-10-13", newest="2026-10-14")
+        await bulk_client.bulk_create_events([{"external_id": "w42-tue"}])
+        second = await bulk_client.list_events(oldest="2026-10-13", newest="2026-10-14")
+
+        assert first[0]["name"] == "Original Event"
+        assert second[0]["name"] == "Original Event"
+        assert get_route.call_count == 2
+        assert post_route.call_count == 1
+    await bulk_client.close()
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_auth_error(client: IntervalsClient):
+    """Test bulk upsert 401 raises IntervalsAuthError."""
+    with respx.mock(base_url=BASE_URL) as respx_mock:
+        respx_mock.post("/athlete/0/events/bulk").respond(401, text="Unauthorized API Key")
+
+        with pytest.raises(IntervalsAuthError):
+            await client.bulk_create_events([{"external_id": "w42-tue"}])
+    await client.close()

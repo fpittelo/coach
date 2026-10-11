@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -699,6 +699,237 @@ class IcuAddSessionCommentInput(BaseToolModel):
         if not sanitized:
             raise ValueError("comment is empty after sanitization")
         return sanitized
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Event Models (#94)
+# ---------------------------------------------------------------------------
+
+#: Maximum number of event drafts accepted per ``icu_batch_create_events``
+#: call. A 7-day microcycle needs at most a handful of entries; the bound
+#: caps abuse surface (payload size) on the highest-scrutiny write path.
+ICU_BATCH_MAX_ITEMS = 50
+
+#: Local start time assigned to batch-placed events when the draft carries
+#: only a calendar date. Deterministic so the confirmation token derived
+#: from the normalized payload is stable across preview and execute phases.
+ICU_EVENT_DEFAULT_START_TIME = "08:00:00"
+
+#: Maximum length of a batch event title (abuse bound on the write payload).
+ICU_EVENT_NAME_MAX_LENGTH = 200
+
+#: Maximum length of a batch event description (human-readable instructions).
+ICU_EVENT_DESCRIPTION_MAX_LENGTH = 5000
+
+#: Maximum length of a batch event workout DSL definition (structured steps
+#: can be long; the DSL is delivered via the description field like the
+#: single-event tools).
+ICU_EVENT_WORKOUT_DOC_MAX_LENGTH = 20000
+
+#: Maximum length of a caller-supplied external_id reconciliation key.
+ICU_EVENT_EXTERNAL_ID_MAX_LENGTH = 128
+
+#: Calendar event categories accepted by the Intervals.icu EventEx schema
+#: (official OpenAPI spec, ``components.schemas.EventEx.category``).
+IcuEventCategory = Literal[
+    "WORKOUT",
+    "RACE_A",
+    "RACE_B",
+    "RACE_C",
+    "NOTE",
+    "PLAN",
+    "HOLIDAY",
+    "SICK",
+    "INJURED",
+    "SET_EFTP",
+    "FITNESS_DAYS",
+    "SEASON_START",
+    "TARGET",
+    "SET_FITNESS",
+]
+
+
+class IcuEventDraft(BaseToolModel):
+    """One planned-workout draft inside an ``icu_batch_create_events`` batch.
+
+    Each draft carries a caller-supplied ``external_id`` reconciliation key:
+    re-submitting the same key upserts (updates) the existing event instead
+    of creating a duplicate (epic #82 batch semantics, PO decision 4a).
+
+    Markdown-injection defense (#90): ``name`` and ``description`` are
+    sanitized at validation (script/style blocks and HTML tags stripped,
+    control characters removed); titles are additionally collapsed to a
+    single line. ``workout_doc`` carries Intervals.icu workout DSL text and
+    is delivered raw via the description field, exactly like the
+    single-event tools.
+    """
+
+    external_id: str = Field(
+        ...,
+        description=(
+            "Caller-supplied reconciliation key. Re-submitting the same "
+            "external_id upserts the existing event instead of duplicating it."
+        ),
+        min_length=1,
+        max_length=ICU_EVENT_EXTERNAL_ID_MAX_LENGTH,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    date: str = Field(
+        ...,
+        description="Calendar date for the event (YYYY-MM-DD).",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    name: str = Field(
+        ...,
+        description=(
+            "Event title. Sanitized (markup stripped) and collapsed to a "
+            "single line at validation."
+        ),
+        min_length=1,
+        max_length=ICU_EVENT_NAME_MAX_LENGTH,
+    )
+    type: str = Field(
+        default="Ride",
+        description="Sport type ('Ride', 'Run', 'Swim', 'WeightTraining', etc.).",
+        min_length=1,
+    )
+    category: IcuEventCategory = Field(
+        default="WORKOUT",
+        description="Intervals.icu calendar event category.",
+    )
+    description: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable instructions. Sanitized (markup stripped) at "
+            "validation; newlines preserved."
+        ),
+        max_length=ICU_EVENT_DESCRIPTION_MAX_LENGTH,
+    )
+    moving_time_seconds: int | None = Field(
+        default=None, description="Planned duration in seconds.", ge=1
+    )
+    icu_training_load: float | None = Field(default=None, description="Planned TSS / load.", ge=0.0)
+    workout_doc: str | None = Field(
+        default=None,
+        description=(
+            "Intervals.icu structured workout DSL definition text, delivered "
+            "via the calendar 'description' field (the API parses the DSL and "
+            "compiles the structured workout on its side)."
+        ),
+        max_length=ICU_EVENT_WORKOUT_DOC_MAX_LENGTH,
+    )
+
+    @field_validator("date")
+    @classmethod
+    def _validate_calendar_date(cls, value: str) -> str:
+        """Reject shape-valid but impossible calendar dates (e.g. 2026-02-30).
+
+        Raises:
+            ValueError: If the date is not a real calendar date.
+        """
+        _parse_iso_date(value, "date")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _sanitize_name(cls, value: str) -> str:
+        """Sanitize the title and collapse it to a single line.
+
+        Raises:
+            ValueError: If the title is empty once sanitized.
+        """
+        sanitized = " ".join(sanitize_comment_text(value).split())
+        if not sanitized:
+            raise ValueError("name is empty after sanitization")
+        return sanitized
+
+    @field_validator("description")
+    @classmethod
+    def _sanitize_description(cls, value: str | None) -> str | None:
+        """Sanitize the description, preserving newlines for multi-line text.
+
+        Raises:
+            ValueError: If a provided description is empty once sanitized.
+        """
+        if value is None:
+            return None
+        sanitized = sanitize_comment_text(value)
+        if not sanitized:
+            raise ValueError("description is empty after sanitization")
+        return sanitized
+
+
+class IcuBatchCreateEventsInput(BaseToolModel):
+    """Input parameters for the confirmation-gated batch event upsert.
+
+    Two-phase confirmation gate (epic #82 binding security condition 2):
+    omit ``confirm_token`` to obtain a dry-run preview with a token derived
+    from the exact normalized payload; re-invoke with that token to execute.
+    A token mismatch (payload changed since the preview) is rejected before
+    any network call.
+
+    The batch is bounded to :data:`ICU_BATCH_MAX_ITEMS` (50) drafts and
+    duplicate ``external_id`` keys are rejected at validation — both before
+    any network call.
+    """
+
+    events: list[IcuEventDraft] = Field(
+        ...,
+        description="Event drafts to place on the calendar (1-50 items).",
+        min_length=1,
+        max_length=ICU_BATCH_MAX_ITEMS,
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    confirm_token: str | None = Field(
+        default=None,
+        description=(
+            "Confirmation token returned by a dry-run preview of the exact "
+            "same batch. Omit to preview; provide to execute."
+        ),
+        max_length=64,
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+    @model_validator(mode="after")
+    def _reject_duplicate_external_ids(self) -> "IcuBatchCreateEventsInput":
+        """Reject two drafts sharing an external_id (upsert ambiguity).
+
+        Raises:
+            ValueError: If any external_id appears more than once.
+        """
+        seen: set[str] = set()
+        for draft in self.events:
+            if draft.external_id in seen:
+                raise ValueError(f"duplicate external_id in batch: {draft.external_id!r}")
+            seen.add(draft.external_id)
+        return self
+
+
+class IcuBatchEventOutcome(BaseToolModel):
+    """Per-item outcome of a batch event upsert (no-rollback semantics).
+
+    The Intervals.icu bulk endpoint has no transactional rollback, so partial
+    success must be visible, never silent: every draft is reported as
+    ``created``, ``updated``, or ``failed`` with a reason when failed.
+    """
+
+    external_id: str = Field(..., description="Caller-supplied reconciliation key.")
+    outcome: Literal["created", "updated", "failed"] = Field(
+        ..., description="Per-item outcome of the upsert."
+    )
+    event_id: str | None = Field(
+        default=None, description="Intervals.icu event ID when the item was written."
+    )
+    reason: str | None = Field(
+        default=None, description="Failure reason (redacted) when the item failed."
+    )
 
 
 # ---------------------------------------------------------------------------

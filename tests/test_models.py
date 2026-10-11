@@ -23,6 +23,9 @@ from coach_mcp.models import (
     GetSportSettingsInput,
     GetWellnessInput,
     IcuAddSessionCommentInput,
+    IcuBatchCreateEventsInput,
+    IcuBatchEventOutcome,
+    IcuEventDraft,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -1518,3 +1521,191 @@ def test_icu_add_session_comment_input_extra_forbid():
     """Test IcuAddSessionCommentInput rejects extra fields."""
     with pytest.raises(ValidationError):
         IcuAddSessionCommentInput(activity_id="i1", comment="ok", extra=True)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Event Models (#94)
+# ---------------------------------------------------------------------------
+
+
+def test_icu_event_draft_accepts_valid_draft():
+    """A valid event draft constructs with all optional fields populated."""
+    draft = IcuEventDraft(
+        external_id="plan-w42-tue",
+        date="2026-10-13",
+        name="Tuesday Threshold",
+        type="Ride",
+        category="WORKOUT",
+        description="3x10min @ 95% FTP",
+        moving_time_seconds=3600,
+        icu_training_load=90.0,
+        workout_doc="- Warm up 10m 50-65%\n3x\n- 10m 95%\n- 5m 50%",
+    )
+    assert draft.external_id == "plan-w42-tue"
+    assert draft.date == "2026-10-13"
+    assert draft.name == "Tuesday Threshold"
+    assert draft.type == "Ride"
+    assert draft.category == "WORKOUT"
+    assert draft.description == "3x10min @ 95% FTP"
+    assert draft.moving_time_seconds == 3600
+    assert draft.icu_training_load == 90.0
+    assert draft.workout_doc is not None
+
+
+def test_icu_event_draft_defaults():
+    """Optional draft fields default to Ride / WORKOUT / None."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Rest Day Note")
+    assert draft.type == "Ride"
+    assert draft.category == "WORKOUT"
+    assert draft.description is None
+    assert draft.workout_doc is None
+    assert draft.moving_time_seconds is None
+    assert draft.icu_training_load is None
+
+
+def test_icu_event_draft_rejects_malformed_date_shape():
+    """AC5: a non-ISO date shape is a field-level error."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="13/10/2026", name="Bad Date")
+
+
+def test_icu_event_draft_rejects_impossible_calendar_date():
+    """AC5: a shape-valid but impossible calendar date is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-02-30", name="Bad Date")
+
+
+def test_icu_event_draft_rejects_bad_external_id():
+    """The external_id reconciliation key rejects empty and unsafe values."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="", date="2026-10-13", name="Bad")
+
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="../../etc/passwd", date="2026-10-13", name="Bad")
+
+
+def test_icu_event_draft_sanitizes_name_and_description():
+    """Markdown-injection defense (#90): markup stripped from title and description."""
+    draft = IcuEventDraft(
+        external_id="x1",
+        date="2026-10-13",
+        name="<script>alert('xss')</script>Threshold Day",
+        description="<img src=x onerror=alert(1)>Ride steady.",
+    )
+    assert "<script>" not in draft.name
+    assert "alert" not in draft.name
+    assert "Threshold Day" in draft.name
+    assert "<img" not in str(draft.description)
+    assert "onerror" not in str(draft.description)
+    assert "Ride steady." in str(draft.description)
+
+
+def test_icu_event_draft_name_newlines_collapsed():
+    """A title is single-line: newlines collapse to single spaces."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Tuesday\nThreshold")
+    assert draft.name == "Tuesday Threshold"
+
+
+def test_icu_event_draft_rejects_name_sanitizing_to_empty():
+    """A title that is empty after sanitization is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-10-13", name="<script>x</script>")
+
+
+def test_icu_event_draft_rejects_description_sanitizing_to_empty():
+    """A provided description that sanitizes to empty is rejected."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(
+            external_id="x1", date="2026-10-13", name="Ok", description="<script>x</script>"
+        )
+
+
+def test_icu_event_draft_rejects_unknown_category():
+    """AC5: a category outside the ICU event enum is a field-level error."""
+    with pytest.raises(ValidationError):
+        IcuEventDraft(external_id="x1", date="2026-10-13", name="Bad", category="BANANA")
+
+
+def test_icu_batch_create_events_input_accepts_valid_batch():
+    """A valid batch constructs; confirm_token defaults to None (preview phase)."""
+    model = IcuBatchCreateEventsInput(
+        events=[
+            IcuEventDraft(external_id="a", date="2026-10-12", name="Mon"),
+            IcuEventDraft(external_id="b", date="2026-10-13", name="Tue"),
+        ]
+    )
+    assert len(model.events) == 2
+    assert model.confirm_token is None
+    assert model.athlete_id is None
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_batch_create_events_input_rejects_over_50_items():
+    """AC4: a batch over 50 items is rejected at validation, before any network call."""
+    drafts = [
+        IcuEventDraft(external_id=f"e{idx}", date="2026-10-13", name=f"W{idx}") for idx in range(51)
+    ]
+    with pytest.raises(ValidationError) as excinfo:
+        IcuBatchCreateEventsInput(events=drafts)
+    assert "50" in str(excinfo.value)
+
+
+def test_icu_batch_create_events_input_accepts_50_items():
+    """The batch boundary of exactly 50 items is accepted."""
+    drafts = [
+        IcuEventDraft(external_id=f"e{idx}", date="2026-10-13", name=f"W{idx}") for idx in range(50)
+    ]
+    model = IcuBatchCreateEventsInput(events=drafts)
+    assert len(model.events) == 50
+
+
+def test_icu_batch_create_events_input_rejects_empty_batch():
+    """An empty batch is rejected at validation."""
+    with pytest.raises(ValidationError):
+        IcuBatchCreateEventsInput(events=[])
+
+
+def test_icu_batch_create_events_input_rejects_duplicate_external_ids():
+    """Duplicate external_ids inside one batch are a caller error (upsert ambiguity)."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuBatchCreateEventsInput(
+            events=[
+                IcuEventDraft(external_id="dup", date="2026-10-12", name="Mon"),
+                IcuEventDraft(external_id="dup", date="2026-10-13", name="Tue"),
+            ]
+        )
+    assert "dup" in str(excinfo.value)
+
+
+def test_icu_batch_create_events_input_extra_forbid():
+    """Extra fields are rejected."""
+    with pytest.raises(ValidationError):
+        IcuBatchCreateEventsInput(
+            events=[IcuEventDraft(external_id="a", date="2026-10-12", name="Mon")],
+            extra=True,  # type: ignore
+        )
+
+
+def test_icu_event_draft_accepts_explicit_none_description():
+    """An explicitly None description stays None (validator short-circuits)."""
+    draft = IcuEventDraft(external_id="x1", date="2026-10-13", name="Ok", description=None)
+    assert draft.description is None
+
+
+def test_icu_batch_event_outcome_model():
+    """The per-item outcome model validates its literal outcome values."""
+    created = IcuBatchEventOutcome(external_id="a", outcome="created", event_id="101")
+    assert created.outcome == "created"
+    assert created.event_id == "101"
+    assert created.reason is None
+
+    updated = IcuBatchEventOutcome(external_id="b", outcome="updated", event_id="102")
+    assert updated.outcome == "updated"
+
+    failed = IcuBatchEventOutcome(external_id="c", outcome="failed", reason="upstream 500")
+    assert failed.outcome == "failed"
+    assert failed.event_id is None
+    assert failed.reason == "upstream 500"
+
+    with pytest.raises(ValidationError):
+        IcuBatchEventOutcome(external_id="d", outcome="skipped")  # type: ignore

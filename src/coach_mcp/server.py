@@ -1,6 +1,8 @@
 """Coach MCP Server: MCPServer implementation for Intervals.icu endurance coaching."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import sys
 from collections.abc import AsyncIterator
@@ -11,7 +13,7 @@ from typing import Any, Literal, cast
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
-from coach_mcp.audit import audit_tool_call
+from coach_mcp.audit import audit_tool_call, emit_tool_batch_outcome
 from coach_mcp.client import IntervalsAPIError, IntervalsClient
 from coach_mcp.config import settings
 from coach_mcp.formatters import (
@@ -32,6 +34,7 @@ from coach_mcp.formatters import (
     to_json_str,
 )
 from coach_mcp.models import (
+    ICU_EVENT_DEFAULT_START_TIME,
     CreateActivityInput,
     CreateEventInput,
     DeleteActivityInput,
@@ -48,6 +51,9 @@ from coach_mcp.models import (
     GetSportSettingsInput,
     GetWellnessInput,
     IcuAddSessionCommentInput,
+    IcuBatchCreateEventsInput,
+    IcuBatchEventOutcome,
+    IcuEventDraft,
     IcuGetWellnessInput,
     ListActivitiesInput,
     ListEventsInput,
@@ -677,6 +683,254 @@ async def icu_add_session_comment(params: IcuAddSessionCommentInput, ctx: Contex
             )
             or ""
         )
+
+
+# ---------------------------------------------------------------------------
+# ICU Batch Event Tools (#94)
+# ---------------------------------------------------------------------------
+
+
+def _build_batch_event_payload(draft: IcuEventDraft) -> dict[str, Any]:
+    """Normalize one event draft into an Intervals.icu ``EventEx`` payload.
+
+    The draft's calendar date is pinned to :data:`ICU_EVENT_DEFAULT_START_TIME`
+    local time so the normalized payload (and therefore the confirmation token
+    derived from it) is deterministic across the preview and execute phases.
+    The workout DSL text is delivered via the ``description`` field exactly
+    like the single-event tools (the API parses the DSL from the description).
+    """
+    payload: dict[str, Any] = {
+        "external_id": draft.external_id,
+        "start_date_local": f"{draft.date}T{ICU_EVENT_DEFAULT_START_TIME}",
+        "name": draft.name,
+        "type": draft.type,
+        "category": draft.category,
+    }
+    description = draft.description
+    if draft.workout_doc:
+        description = f"{description}\n\n{draft.workout_doc}" if description else draft.workout_doc
+    if description:
+        payload["description"] = description
+    if draft.moving_time_seconds is not None:
+        payload["moving_time"] = draft.moving_time_seconds
+    if draft.icu_training_load is not None:
+        payload["icu_training_load"] = draft.icu_training_load
+    return payload
+
+
+def _derive_batch_confirm_token(payloads: list[dict[str, Any]]) -> str:
+    """Derive the confirmation token fingerprinting the exact batch payload.
+
+    The token is a SHA-256 prefix over the canonical JSON serialization of the
+    normalized payloads. It is a payload fingerprint, not a secret: execution
+    is only accepted when the caller re-supplies the token of the exact batch
+    it previewed, so any draft change between preview and execute invalidates
+    the confirmation.
+    """
+    canonical = json.dumps(payloads, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _format_batch_preview(
+    params: IcuBatchCreateEventsInput,
+    payloads: list[dict[str, Any]],
+    token: str,
+) -> str:
+    """Render the dry-run preview: normalized payload summary + confirm token."""
+    if params.response_format == ResponseFormat.JSON:
+        return to_json_str(
+            {
+                "phase": "preview",
+                "item_count": len(payloads),
+                "confirm_token": token,
+                "events": payloads,
+                "note": "Re-invoke with confirm_token to place these events.",
+            }
+        )
+
+    dates = [draft.date for draft in params.events]
+    lines = [
+        "# Batch Event Preview (dry-run — nothing written)",
+        "",
+        f"- **Items**: {len(payloads)}",
+        f"- **Date span**: {min(dates)} → {max(dates)}",
+        f"- **Confirmation token**: `{token}`",
+        "",
+        "| # | external_id | date | title | type | category |",
+        "|---|-------------|------|-------|------|----------|",
+    ]
+    for idx, draft in enumerate(params.events, start=1):
+        lines.append(
+            f"| {idx} | {draft.external_id} | {draft.date} | {draft.name} "
+            f"| {draft.type} | {draft.category} |"
+        )
+    lines.extend(
+        [
+            "",
+            "Re-invoke with the same events and `confirm_token` set to the token above",
+            "to place these events on the calendar. Execution requires the exact token",
+            "derived from this preview.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_batch_outcomes(
+    params: IcuBatchCreateEventsInput,
+    outcomes: list[IcuBatchEventOutcome],
+) -> str:
+    """Render the per-item outcome report (no-rollback semantics made visible)."""
+    created = sum(1 for o in outcomes if o.outcome == "created")
+    updated = sum(1 for o in outcomes if o.outcome == "updated")
+    failed = sum(1 for o in outcomes if o.outcome == "failed")
+    if params.response_format == ResponseFormat.JSON:
+        return to_json_str(
+            {
+                "created": created,
+                "updated": updated,
+                "failed": failed,
+                "outcomes": [o.model_dump() for o in outcomes],
+            }
+        )
+
+    lines = [
+        "# Batch Event Upsert Report",
+        "",
+        f"- **Created**: {created} | **Updated**: {updated} | **Failed**: {failed}",
+        "",
+        "No rollback: failed items leave no partial state changes behind;",
+        "re-run the same batch (same external_ids) to retry failed items.",
+        "",
+        "| external_id | outcome | event_id | reason |",
+        "|--------------|---------|----------|--------|",
+    ]
+    for outcome in outcomes:
+        lines.append(
+            f"| {outcome.external_id} | {outcome.outcome} | {outcome.event_id or '-'} "
+            f"| {outcome.reason or '-'} |"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="icu_batch_create_events",
+    annotations=ToolAnnotations(
+        title="Batch Place Planned Workouts (Upsert)",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_batch_create_events(params: IcuBatchCreateEventsInput, ctx: Context) -> str:
+    """Place a weekly batch of planned workouts on the Intervals.icu calendar.
+
+    Two-phase confirmation gate (epic #82 binding security condition 2):
+
+    * **Preview (dry-run)** — invoke without ``confirm_token``: the batch is
+      validated and normalized (titles/descriptions sanitized, dates pinned
+      to a default local start time) and a confirmation token derived from
+      the exact normalized payload is returned. Nothing is written.
+    * **Execute** — re-invoke with the same events and ``confirm_token`` set
+      to the previewed token. A token mismatch (payload changed since the
+      preview) is rejected before any network call.
+
+    Upsert semantics: each draft carries a caller-supplied ``external_id``;
+    re-submitting the same week upserts (updates) existing events instead of
+    duplicating them. The upstream API has no rollback: the per-item outcome
+    report (created / updated / failed + reason) makes partial success
+    visible, never silent.
+
+    Batch bound: at most 50 drafts per call, enforced at validation before
+    any network call.
+
+    Args:
+        params (IcuBatchCreateEventsInput): Event drafts (1-50), optional
+            athlete ID, optional confirmation token, and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Preview (dry-run) with the confirmation token, or the per-item
+        outcome report, or a handled ``Error ...`` string (audited at ERROR).
+    """
+    client = _get_client_from_ctx(ctx)
+    payloads = [_build_batch_event_payload(draft) for draft in params.events]
+    token = _derive_batch_confirm_token(payloads)
+
+    if params.confirm_token is None:
+        return _format_batch_preview(params, payloads, token)
+
+    if params.confirm_token != token:
+        return (
+            "Error: batch event upsert rejected — confirmation token mismatch "
+            "(the payload changed since the preview or the token is invalid; "
+            "re-run the preview and confirm the new token)."
+        )
+
+    try:
+        oldest = min(draft.date for draft in params.events)
+        newest = max(draft.date for draft in params.events)
+        existing = await client.list_events(
+            oldest=oldest, newest=newest, athlete_id=params.athlete_id
+        )
+        existing_external_ids = {
+            str(event["external_id"])
+            for event in existing
+            if isinstance(event, dict) and event.get("external_id")
+        }
+
+        results = await client.bulk_create_events(payloads, athlete_id=params.athlete_id)
+        if not isinstance(results, list):
+            raise IntervalsAPIError("Unexpected response shape from events/bulk (expected a list)")
+        returned_by_external_id = {
+            str(row["external_id"]): row
+            for row in results
+            if isinstance(row, dict) and row.get("external_id")
+        }
+
+        outcomes: list[IcuBatchEventOutcome] = []
+        for draft in params.events:
+            row = returned_by_external_id.get(draft.external_id)
+            if row is None:
+                outcomes.append(
+                    IcuBatchEventOutcome(
+                        external_id=draft.external_id,
+                        outcome="failed",
+                        reason="missing from Intervals.icu response",
+                    )
+                )
+            else:
+                outcomes.append(
+                    IcuBatchEventOutcome(
+                        external_id=draft.external_id,
+                        outcome=(
+                            "updated" if draft.external_id in existing_external_ids else "created"
+                        ),
+                        event_id=str(row["id"]) if row.get("id") is not None else None,
+                    )
+                )
+        emit_tool_batch_outcome(
+            tool="icu_batch_create_events",
+            outcomes=[outcome.model_dump() for outcome in outcomes],
+            status="success" if all(o.outcome != "failed" for o in outcomes) else "error",
+        )
+        return _format_batch_outcomes(params, outcomes)
+    except IntervalsAPIError as exc:
+        reason = redact_sensitive(str(exc)) or "upstream error"
+        emit_tool_batch_outcome(
+            tool="icu_batch_create_events",
+            outcomes=[
+                {
+                    "external_id": draft.external_id,
+                    "outcome": "failed",
+                    "event_id": None,
+                    "reason": reason,
+                }
+                for draft in params.events
+            ],
+            status="error",
+        )
+        return redact_sensitive(f"Error placing batch events: {exc}") or ""
 
 
 # ---------------------------------------------------------------------------
