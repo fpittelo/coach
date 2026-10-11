@@ -21,7 +21,7 @@
 
 ## 1. System Overview & Architecture
 
-**Coach MCP** is a production-grade [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server written in Python 3.11+. It exposes 20 tools that let an LLM (Claude, OpenCode, Cursor, etc.) read and write endurance-sports data through the [Intervals.icu](https://intervals.icu) REST API.
+**Coach MCP** is a production-grade [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server written in Python 3.11+. It exposes 29 tools that let an LLM (Claude, OpenCode, Cursor, etc.) read and write endurance-sports data through the [Intervals.icu](https://intervals.icu) REST API.
 
 ```mermaid
 graph TD
@@ -137,7 +137,7 @@ CACHE_TTL_VOLATILE_SECONDS=60
 
 - `MCP_TRANSPORT` accepts both `streamable_http` (underscore) and `streamable-http` (hyphen) for convenience.
 - For stdio clients (Claude Desktop, OpenCode), keep `MCP_TRANSPORT=stdio`.
-- For remote HTTP/SSE clients, set `MCP_TRANSPORT=streamable_http` and expose `MCP_PORT`.
+- For the containerised HTTP/SSE path (coach-web sidecar, §4.2), set `MCP_TRANSPORT=sse`; `MCP_HOST`/`MCP_PORT` bind **inside** the Docker network only — the sidecar publishes no host ports.
 
 ### Docker secrets (`_FILE` pattern)
 
@@ -269,7 +269,8 @@ Images are published to GHCR by the `deploy.yaml` workflow with this tag contrac
 | :--- | :--- |
 | Push to `dev` | `:dev`, `:<commit-sha>` |
 | Merge to `qa` | `:qa`, `:<commit-sha>` |
-| Merge to `main` or a `v*` release tag | `:prod`, `:latest`, `v*`, `:<commit-sha>` |
+| Merge to `main` | `:prod`, `:latest`, `:<commit-sha>` |
+| Push a `v*` release tag | `v*`, `:prod`, `:latest`, `:<commit-sha>` |
 
 `:prod` and `:latest` are **mutable**: they are pointers that move to whichever image the most recent release built. A **digest** (`@sha256:…`) is **immutable**: it always resolves to the exact image it was recorded for and can never be re-pointed.
 
@@ -359,12 +360,14 @@ Edit your `claude_desktop_config.json`:
         "-e", "INTERVALS_API_KEY=your_api_key_here",
         "-e", "INTERVALS_ATHLETE_ID=0",
         "-e", "MCP_TRANSPORT=stdio",
-        "ghcr.io/fpittelo/coach:latest"
+        "ghcr.io/fpittelo/coach:v0.6.2"
       ]
     }
   }
 }
 ```
+
+Pin a released `v*` tag as shown — never the mutable `:latest` (see §4.3 for digest pinning).
 
 Restart Claude Desktop after editing. The Coach tools appear under the hammer 🔨 menu.
 
@@ -414,18 +417,9 @@ Most generic MCP clients accept the same `command` + `env` stdio configuration a
 
 #### HTTP / SSE configuration template
 
-If your client supports MCP over HTTP or SSE, point it at the running Coach server:
+Coach MCP also speaks MCP over SSE and streamable HTTP. In the ratified deployment topology (§4.2, [ADR 0001](adr/0001-local-docker-only-deployment-on-vidar.md)) that endpoint is consumed **inside the Docker network** by coach-web (`COACH_MCP_URL=http://coach-mcp:8000/sse`). The sidecar publishes no host ports, so the endpoint is deliberately not reachable from `localhost`, the LAN, or the internet.
 
-```text
-URL: http://localhost:8000/mcp
-Transport: streamable_http or sse
-```
-
-When running in Docker with `MCP_TRANSPORT=streamable_http` and port `8000` exposed, use:
-
-```text
-URL: http://localhost:8000/mcp
-```
+Desktop and generic MCP clients should therefore use the **stdio** configuration above; there is no ratified direct-HTTP client path from outside the Docker network.
 
 > **Note**: Not all clients support streamable HTTP or SSE. Claude Desktop currently uses stdio only. Cursor, Cline, and Windsurf support varies by version; consult their MCP documentation.
 
@@ -433,7 +427,9 @@ URL: http://localhost:8000/mcp
 
 ## 6. Complete Tool Catalog
 
-Coach exposes **20 tools** grouped into six categories. All read tools support `response_format: markdown | json`.
+Coach exposes **29 tools** grouped into eight categories. All read tools support `response_format: markdown | json`.
+
+> **Two naming generations.** The 23 older tools carry the `intervals_*` prefix — coach-web consumes them in production, so renaming them would be a breaking change and the names stay. The 6 newer tools carry the `icu_*` prefix, the going-forward naming convention (ratified in #90); future tools will use it.
 
 ### 6.1 Athlete Profiling
 
@@ -461,6 +457,7 @@ Coach exposes **20 tools** grouped into six categories. All read tools support `
 | `intervals_get_wellness` | Daily resting HR, HRV, sleep, readiness, fatigue, soreness. | `{"oldest": "2026-08-01", "newest": "2026-08-22"}` | Wellness table. |
 | `intervals_record_wellness` | Record or update daily wellness metrics. | `{"date": "2026-08-22", "restingHR": 48, "readiness": 85.5}` | Success confirmation. |
 | `intervals_record_wellness_bulk` | Record or update wellness for multiple days in one call. | `{"records": [{"date": "2026-08-22", "restingHR": 48}, {"date": "2026-08-23", "readiness": 85.5}]}` | Success confirmation. |
+| `intervals_get_readiness_dashboard` | Composite daily readiness dashboard synthesized from wellness and sport settings. | `{"athlete_id": "0", "days": 7, "response_format": "markdown"}` | Readiness dashboard table. |
 
 ### 6.4 Fitness / Banister model
 
@@ -484,6 +481,26 @@ Coach exposes **20 tools** grouped into six categories. All read tools support `
 | :--- | :--- | :--- | :--- |
 | `intervals_list_folders` | Custom folders organising workout templates. | `{}` | Folder list with item counts. |
 | `intervals_list_workouts` | Reusable workout templates, optionally filtered by folder. | `{"folder_id": "folder_abc123"}` | Workout template list. |
+
+### 6.7 Power Analytics
+
+| Tool | Description | Sample Input | Sample Output |
+| :--- | :--- | :--- | :--- |
+| `intervals_get_power_curve` | Mean-maximal power (MMP) curve for the athlete or a specific activity. | `{"athlete_id": "0", "sport_type": "Ride", "response_format": "markdown"}` | Markdown MMP curve table. |
+| `intervals_get_power_model` | Critical power (CP), anaerobic work capacity (W′) and Pmax model. | `{"athlete_id": "0", "sport_type": "Ride", "response_format": "markdown"}` | CP / W′ / Pmax model summary. |
+
+### 6.8 Intervals.icu Bounded Tools (`icu_*`)
+
+The `icu_*` tools are the going-forward generation (epic #82): every read is bounded to a 90-day window and whitelist-projected, and every write passes a confirmation gate.
+
+| Tool | Description | Sample Input | Sample Output |
+| :--- | :--- | :--- | :--- |
+| `icu_get_wellness` | Daily wellness records over a bounded 90-day window, whitelist-projected (sleep, HRV, soreness, fatigue, stress, readiness, CTL/ATL/TSB). | `{"oldest": "2026-08-01", "newest": "2026-08-22"}` | Whitelisted wellness table. |
+| `icu_add_session_comment` | Post a coach debrief comment on a completed activity (write-gated: `confirmed=true` required). | `{"activity_id": "i12345678", "comment": "Solid threshold session, fueling on target.", "confirmed": true}` | Success confirmation. |
+| `icu_batch_create_events` | Place a weekly batch of planned workouts on the calendar (two-phase gate: dry-run preview returns a `confirm_token`, re-invoke with it to execute). | `{"events": [{"external_id": "wk37-tue", "date": "2026-08-25", "name": "VO2max 4x4", "type": "Ride"}]}` | Per-item created/updated/failed report. |
+| `icu_get_workout_compliance` | Planned-vs-executed adherence over a bounded 90-day range, joined by Intervals.icu's native `paired_event_id`. | `{"oldest": "2026-08-18", "newest": "2026-08-25"}` | Compliance report with adherence rate. |
+| `icu_get_completed_sessions` | Completed sessions over a bounded 90-day range — id, date, type, title, duration and load only. | `{"oldest": "2026-08-18", "newest": "2026-08-25", "limit": 50}` | Session summary table. |
+| `icu_get_trends` | CTL/ATL/TSB trend aggregates over a bounded 90-day range, downsampled to weekly or daily granularity. | `{"oldest": "2026-08-01", "newest": "2026-08-22", "granularity": "weekly"}` | Trend series table. |
 
 ---
 
@@ -634,8 +651,8 @@ coach-mcp 2> coach-mcp.log
 
 **Resolution**:
 
-- Ensure `MCP_TRANSPORT=streamable_http` and the container port is published (`-p 8000:8000`).
-- Verify the host firewall allows traffic on the exposed port.
+- Confirm the client and `coach-mcp` share the same Docker network (`coach-net` in the lane topology): the MCP endpoint is reachable only inside the network, and the sidecar publishes no host ports (§4.2) — host-port or `localhost` paths cannot work by design.
+- Verify the client's `COACH_MCP_URL` points at the service name (`http://coach-mcp:8000/sse`), not `localhost`.
 - For Docker Compose, confirm the service is healthy: `docker compose ps`.
 
 ### 8.5 Timeouts on large requests
@@ -667,11 +684,11 @@ coach-mcp
 # Local HTTP
 coach-mcp   # with MCP_TRANSPORT=streamable_http
 
-# Docker stdio
-docker run -i --rm -e INTERVALS_API_KEY=... ghcr.io/fpittelo/coach:latest
+# Docker stdio (dev-lane tag)
+docker run -i --rm -e INTERVALS_API_KEY=... ghcr.io/fpittelo/coach:dev
 
-# Docker HTTP
-docker run -d --rm -p 8000:8000 -e MCP_TRANSPORT=streamable_http -e INTERVALS_API_KEY=... ghcr.io/fpittelo/coach:latest
+# Production sidecar: digest-pinned image, no published host ports (see §4.3)
+# ghcr.io/fpittelo/coach@sha256:… — consumed via the coach-web lane compose
 
 # Lint & test
 ruff check .

@@ -61,7 +61,8 @@ deployment stacks of its own.
 | :--- | :--- |
 | push to `dev` | `:dev` + `:sha` |
 | merge to `qa` | `:qa` + `:sha` |
-| merge to `main` (or `v*` tag) | `:prod`, `:latest`, `v*` + `:sha` |
+| merge to `main` | `:prod`, `:latest` + `:sha` |
+| push a `v*` tag | `v*`, `:prod`, `:latest` + `:sha` |
 
 Verified against coach-web's `COACH_MCP_IMAGE` defaults
 (`ghcr.io/fpittelo/coach:dev|qa|prod`) — no mismatch.
@@ -101,10 +102,10 @@ local STRIDE model is coach-web `docs/security.md` B1–B10 — this repo's arc4
 
 | # | STRIDE | Threat | Compensating control |
 | :--- | :--- | :--- | :--- |
-| T1 | EoP / Info Disclosure | coach-web compromise (incl. LLM/MCP content prompt injection) → MCP write tools → full Intervals.icu account mutation | #82 condition 2 (write-confirmation gate); #61 bearer auth (sequenced — see below) |
-| T2 | Info Disclosure | `INTERVALS_API_KEY` env-var exposure (`docker inspect`, `/proc/<pid>/environ`) → full ICU account | #63 (Docker secrets `_FILE` pattern) + #82 condition 6 (per-lane env `chmod 600`, never logged, rotate on suspicion) — **residual until #63 lands**: the key is currently env-injected |
+| T1 | EoP / Info Disclosure | coach-web compromise (incl. LLM/MCP content prompt injection) → MCP write tools → full Intervals.icu account mutation | #82 condition 2 (write-confirmation gate); #61 bearer auth (landed — see T4) |
+| T2 | Info Disclosure | `INTERVALS_API_KEY` env-var exposure (`docker inspect`, `/proc/<pid>/environ`) → full ICU account | #63 (Docker secrets `_FILE` pattern) + #82 condition 6 (per-lane env `chmod 600`, never logged, rotate on suspicion) — **#63 landed (v0.5.0)**: the `_FILE` pattern is live in `config.py`; the env-injection residual is closed when the lane supplies the key via `_FILE` |
 | T3 | EoP | Container escape from any `coach-net` peer → host (biometric data, docker socket) | Container hardening in coach-web compose (`read_only`, `cap_drop: ALL`, `no-new-privileges`); docker-group membership remains root-equivalent (coach-web security.md B3) |
-| T4 | Spoofing | Any sibling container on `coach-net` impersonates coach-web toward `coach-mcp` (no transport auth) | #61 bearer auth — **sequencing condition: #61 must not slip past #82's write tools**; until then the #82 condition-2 write-confirmation gate is the interim control |
+| T4 | Spoofing | Any sibling container on `coach-net` impersonates coach-web toward `coach-mcp` (no transport auth) | #61 bearer auth — **landed (v0.6.0)** on both HTTP transports (SSE `/sse` + streamable `/mcp`); the sequencing condition (#61 not slipping past #82's write tools) is satisfied, and the #82 condition-2 write-confirmation gate continues as an independent write-safety control |
 
 Supply-chain note: the prod lane currently consumes `coach-mcp` by the mutable
 `:prod` tag while its sibling services are digest-pinned — a digest-pinning

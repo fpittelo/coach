@@ -122,7 +122,7 @@ def format_activities_list(activities: list[dict[str, Any]], fmt_json: bool = Fa
         )
 
         lines.append(
-            f"| {date_str} | [{_escape_md_cell(name)}](id:{act_id}) | {act_type} | {dur_str} "
+            f"| {date_str} | [{escape_md_cell(name)}](id:{act_id}) | {act_type} | {dur_str} "
             f"| {dist_km} | {avg_watts} | {avg_hr} | {load} |"
         )
 
@@ -541,8 +541,8 @@ def format_events_list(events: list[dict[str, Any]], fmt_json: bool = False) -> 
         desc = (ev.get("description") or "").replace("\n", " ")[:40]
 
         lines.append(
-            f"| {date_str} | [{_escape_md_cell(name)}](id:{ev_id}) | {cat} | {sport} "
-            f"| {dur_str} | {load} | {_escape_md_cell(desc)} |"
+            f"| {date_str} | [{escape_md_cell(name)}](id:{ev_id}) | {cat} | {sport} "
+            f"| {dur_str} | {load} | {escape_md_cell(desc)} |"
         )
 
     return "\n".join(lines)
@@ -584,9 +584,10 @@ def format_workouts(workouts: list[dict[str, Any]], fmt_json: bool = False) -> s
     return "\n".join(lines)
 
 
-def _escape_md_cell(text: str) -> str:
+def escape_md_cell(text: str) -> str:
     """Escape markdown-significant characters for safe table-cell interpolation.
 
+    Escape ``\\``, ``|``, ``[``, and ``]``; flatten CR/LF to a single space.
     Event and session titles come from Intervals.icu and are interpolated into
     markdown table cells (#90 Item 2). An unescaped ``|`` or newline breaks the
     table structure, and unescaped ``[``/``]`` let a hostile title inject link
@@ -637,7 +638,7 @@ def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool 
     for event in report.events:
         compliance = f"{event.compliance:.1f}" if event.compliance is not None else "-"
         lines.append(
-            f"| {event.date} | {_escape_md_cell(event.name)} | {event.status} | {compliance} "
+            f"| {event.date} | {escape_md_cell(event.name)} | {event.status} | {compliance} "
             f"| {event.structure_diff} |"
         )
     return "\n".join(lines)
@@ -678,7 +679,7 @@ def format_completed_sessions(page: "CompletedSessionsPage", fmt_json: bool = Fa
         )
         load = f"{session.load:.0f}" if session.load is not None else "-"
         lines.append(
-            f"| {session.date} | [{_escape_md_cell(session.title)}](id:{session.id}) "
+            f"| {session.date} | [{escape_md_cell(session.title)}](id:{session.id}) "
             f"| {session.type} | {duration} | {load} |"
         )
     return "\n".join(lines)
@@ -871,7 +872,7 @@ def format_power_curve(
         # series (duration/watts/wkg) and sport keys from Intervals.icu's fixed
         # sport-type vocabulary — the same constrained class as `session.type`,
         # which #90 deliberately left unescaped. No athlete free-text reaches
-        # this row, so `_escape_md_cell` is not required here (KIS).
+        # this row, so `escape_md_cell` is not required here (KIS).
         lines.append(f"| {duration} | {watts} | {wkg} | {sport} |")
 
     return "\n".join(lines)

@@ -5,7 +5,7 @@
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-brightgreen.svg)](https://modelcontextprotocol.io)
 [![OCI Non-Root](https://img.shields.io/badge/Docker-Non--Root%20(UID%2010001)-success.svg)](https://opencontainers.org)
 
-**Coach MCP** is a production-grade Model Context Protocol (MCP) server that empowers Large Language Models (LLMs) to act as intelligent, data-driven endurance sports coaches by interacting seamlessly with the **Intervals.icu** REST API. It exposes 20 tools covering athlete profiling, activity analytics, wellness tracking, fitness metrics (Banister CTL/ATL/TSB), and structured workout planning.
+**Coach MCP** is a production-grade Model Context Protocol (MCP) server that empowers Large Language Models (LLMs) to act as intelligent, data-driven endurance sports coaches by interacting seamlessly with the **Intervals.icu** REST API. It exposes 29 tools covering athlete profiling, activity analytics, wellness tracking, fitness metrics (Banister CTL/ATL/TSB), and structured workout planning.
 
 > **📖 New to Coach MCP? Start with the [User Guide](docs/user_guide.md) for complete setup, deployment, and client integration instructions.**
 
@@ -48,7 +48,7 @@ graph TD
 
 All documentation lives in `docs/` — the README links, it never duplicates:
 
-- **[User Guide](docs/user_guide.md)** — Complete setup, configuration, deployment (local, Docker, Compose, GHCR), client integration (Claude Desktop, OpenCode, Cursor, generic MCP), the full 20-tool catalog, workout DSL guide, and troubleshooting.
+- **[User Guide](docs/user_guide.md)** — Complete setup, configuration, deployment (local, Docker, Compose, GHCR), client integration (Claude Desktop, OpenCode, Cursor, generic MCP), the full 29-tool catalog, workout DSL guide, and troubleshooting.
 - **[Contributing](CONTRIBUTING.md)** — Governance (FPITTELO PROJECT STANDARD v1), local pre-flight, and PR protocol.
 - **[Changelog](CHANGELOG.md)** — Release history (Keep a Changelog).
 
@@ -57,14 +57,14 @@ All documentation lives in `docs/` — the README links, it never duplicates:
 ## 🚀 Quick Start
 
 ```bash
-# Pull the production image and run in stdio mode
+# Pull a pinned release image and run in stdio mode
 docker run -i --rm \
   -e INTERVALS_API_KEY="your_api_key" \
   -e INTERVALS_ATHLETE_ID="0" \
-  ghcr.io/fpittelo/coach:latest
+  ghcr.io/fpittelo/coach:v0.6.2
 ```
 
-For HTTP/SSE deployment, Docker Compose, local Python setup, environment-variable reference, and client configuration, see the [User Guide](docs/user_guide.md).
+Deployment is local-Docker-only: images are published to GHCR and consumed as a sidecar by the coach-web lanes ([ADR 0001](docs/adr/0001-local-docker-only-deployment-on-vidar.md) — no standalone Compose stacks). For the topology, local Python setup, environment-variable reference, and client configuration, see the [User Guide](docs/user_guide.md).
 
 ---
 

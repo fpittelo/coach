@@ -41,6 +41,7 @@ class BearerTokenMiddleware:
     """
 
     def __init__(self, app: ASGIApp, token: str) -> None:
+        """Store the guarded app and the shared token (``settings.coach_mcp_auth_token``)."""
         self.app = app
         self._token = token
 
