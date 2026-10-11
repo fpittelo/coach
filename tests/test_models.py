@@ -24,10 +24,12 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuActivityType,
     IcuAddSessionCommentInput,
     IcuBatchCreateEventsInput,
     IcuBatchEventOutcome,
     IcuEventDraft,
+    IcuGetCompletedSessionsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
@@ -42,6 +44,7 @@ from coach_mcp.models import (
     WellnessRecordItem,
     WorkoutComplianceEvent,
     build_workout_compliance_report,
+    project_completed_sessions,
     project_wellness_days,
 )
 
@@ -2072,3 +2075,203 @@ def test_build_workout_compliance_report_unparseable_event_date_is_missed():
         "2026-10-06", "2026-10-07", [event], [], today=date(2026, 10, 11)
     )
     assert report.events[0].status == "missed"
+
+
+# ---------------------------------------------------------------------------
+# ICU Completed Sessions Models (#96)
+# ---------------------------------------------------------------------------
+
+
+@patch("coach_mcp.models.date")
+def test_icu_get_completed_sessions_input_default_dates(mock_date):
+    """Test IcuGetCompletedSessionsInput defaults to a 7-day debrief window."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    model = IcuGetCompletedSessionsInput()
+    assert model.oldest == "2026-10-04"
+    assert model.newest == "2026-10-11"
+    assert model.athlete_id is None
+    assert model.activity_type is None
+    assert model.limit == 50
+    assert model.response_format == ResponseFormat.MARKDOWN
+
+
+def test_icu_get_completed_sessions_input_explicit_dates_preserved():
+    """Test IcuGetCompletedSessionsInput keeps an explicit in-bounds date range."""
+    model = IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-10")
+    assert model.oldest == "2026-10-01"
+    assert model.newest == "2026-10-10"
+
+
+def test_icu_get_completed_sessions_input_rejects_range_over_90_days():
+    """AC1: a >90-day span is rejected with an explicit validation error."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+
+
+def test_icu_get_completed_sessions_input_allows_full_90_day_span():
+    """A range of exactly 90 days is accepted."""
+    model = IcuGetCompletedSessionsInput(oldest="2026-07-13", newest="2026-10-11")
+    assert model.oldest == "2026-07-13"
+    assert model.newest == "2026-10-11"
+
+
+def test_icu_get_completed_sessions_input_rejects_oldest_after_newest():
+    """Test IcuGetCompletedSessionsInput rejects an inverted date range."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-11", newest="2026-01-01")
+
+
+def test_icu_get_completed_sessions_input_rejects_impossible_calendar_dates():
+    """Test IcuGetCompletedSessionsInput rejects well-formed but impossible dates."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-02-30", newest="2026-10-11")
+
+
+def test_icu_get_completed_sessions_input_rejects_bad_date_format():
+    """Test IcuGetCompletedSessionsInput rejects non-ISO date shapes."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="01/02/2026", newest="2026-10-11")
+
+
+def test_icu_get_completed_sessions_input_page_size_cap():
+    """AC2: the page size is capped to 1-100."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=0)
+
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=101)
+
+    valid_max = IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", limit=100)
+    assert valid_max.limit == 100
+
+
+def test_icu_get_completed_sessions_input_type_filter_accepts_enum_values():
+    """AC3: defined enum values are accepted (member and raw string)."""
+    model = IcuGetCompletedSessionsInput(
+        oldest="2026-10-01", newest="2026-10-11", activity_type=IcuActivityType.RIDE
+    )
+    assert model.activity_type == IcuActivityType.RIDE
+
+    model_string = IcuGetCompletedSessionsInput(
+        oldest="2026-10-01", newest="2026-10-11", activity_type="VirtualRide"
+    )
+    assert model_string.activity_type == IcuActivityType.VIRTUAL_RIDE
+
+
+def test_icu_get_completed_sessions_input_type_filter_rejects_unknown_value():
+    """AC3: values outside the enum are rejected with field-level errors."""
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(
+            oldest="2026-10-01", newest="2026-10-11", activity_type="Cycling"
+        )
+    assert "activity_type" in str(excinfo.value)
+
+
+def test_icu_get_completed_sessions_input_type_filter_rejects_loose_boolean():
+    """#90 gating: a loose boolean is never a valid activity-type filter."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(oldest="2026-10-01", newest="2026-10-11", activity_type=True)
+
+
+def test_icu_get_completed_sessions_input_extra_forbid():
+    """Test IcuGetCompletedSessionsInput rejects extra fields."""
+    with pytest.raises(ValidationError):
+        IcuGetCompletedSessionsInput(extra=True)  # type: ignore
+
+
+def _completed_session_raw(**overrides: Any) -> dict[str, Any]:
+    """Raw ICU activity payload including non-whitelisted exfiltration bait."""
+    record: dict[str, Any] = {
+        "id": "a1",
+        "name": "Zwift Tempo",
+        "type": "VirtualRide",
+        "start_date_local": "2026-10-08T09:00:00",
+        "moving_time": 3600,
+        "icu_training_load": 85,
+        "average_heartrate": 150,
+        "average_watts": 250.0,
+        "max_heartrate": 180,
+        "calories": 900,
+        "description": "secret-athlete-notes",
+        "paired_event_id": 101,
+        "someUnknownIcuField": "leak-attempt",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_completed_session_summary_exposes_whitelist_only():
+    """Binding condition 2: projection drops every non-whitelisted ICU field."""
+    projected = project_completed_sessions([_completed_session_raw()])
+    assert len(projected) == 1
+    dumped = projected[0].model_dump()
+    assert set(dumped.keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    assert dumped["id"] == "a1"
+    assert dumped["date"] == "2026-10-08"
+    assert dumped["type"] == "VirtualRide"
+    assert dumped["title"] == "Zwift Tempo"
+    assert dumped["duration_seconds"] == 3600.0
+    assert dumped["load"] == 85.0
+    # Never raw pass-through: non-whitelisted values are absent.
+    for banned in (
+        "average_heartrate",
+        "average_watts",
+        "max_heartrate",
+        "calories",
+        "description",
+        "paired_event_id",
+        "someUnknownIcuField",
+    ):
+        assert banned not in dumped
+
+
+def test_completed_session_summary_missing_fields_are_none():
+    """Missing whitelisted fields project as None, never as raw defaults."""
+    projected = project_completed_sessions([{"id": "a2", "type": "Run"}])
+    session = projected[0]
+    assert session.date == ""
+    assert session.title == "Untitled"
+    assert session.duration_seconds is None
+    assert session.load is None
+
+
+def test_completed_session_summary_ignores_non_numeric_values():
+    """Non-numeric ICU values are dropped instead of passing through."""
+    projected = project_completed_sessions(
+        [{"id": "a3", "type": "Ride", "moving_time": "not-a-number", "icu_training_load": True}]
+    )
+    assert projected[0].duration_seconds is None
+    assert projected[0].load is None
+
+
+def test_project_completed_sessions_filters_by_type():
+    """AC3: the strict enum filter keeps only matching activity types."""
+    records = [
+        _completed_session_raw(id="a1", type="VirtualRide"),
+        _completed_session_raw(id="a2", type="Run"),
+        _completed_session_raw(id="a3", type="Ride"),
+    ]
+    rides = project_completed_sessions(records, activity_type=IcuActivityType.RIDE)
+    assert [session.id for session in rides] == ["a3"]
+
+    all_sessions = project_completed_sessions(records)
+    assert [session.id for session in all_sessions] == ["a1", "a2", "a3"]
+
+
+def test_project_completed_sessions_skips_malformed_records():
+    """Defensive guard: malformed records are skipped, never crash."""
+    projected = project_completed_sessions(["not-a-dict"])  # type: ignore[list-item]
+    assert projected == []
+
+
+def test_project_completed_sessions_empty():
+    """An empty ICU payload projects to an empty list."""
+    assert project_completed_sessions([]) == []

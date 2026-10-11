@@ -20,6 +20,7 @@ from coach_mcp.formatters import (
     format_activities_list,
     format_activity_detail,
     format_activity_streams,
+    format_completed_sessions,
     format_events_list,
     format_fitness_summary,
     format_folders,
@@ -36,6 +37,7 @@ from coach_mcp.formatters import (
 )
 from coach_mcp.models import (
     ICU_EVENT_DEFAULT_START_TIME,
+    CompletedSessionsPage,
     CreateActivityInput,
     CreateEventInput,
     DeleteActivityInput,
@@ -55,6 +57,7 @@ from coach_mcp.models import (
     IcuBatchCreateEventsInput,
     IcuBatchEventOutcome,
     IcuEventDraft,
+    IcuGetCompletedSessionsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
@@ -67,6 +70,7 @@ from coach_mcp.models import (
     UpdateActivityInput,
     UpdateEventInput,
     build_workout_compliance_report,
+    project_completed_sessions,
     project_wellness_days,
 )
 from coach_mcp.security import redact_sensitive
@@ -996,6 +1000,81 @@ async def icu_get_workout_compliance(params: IcuGetWorkoutComplianceInput, ctx: 
         return redact_sensitive(f"Error fetching workout compliance: {exc}") or ""
     except Exception as exc:  # noqa: BLE001
         return redact_sensitive(f"Error fetching workout compliance: {exc}") or ""
+
+
+# ---------------------------------------------------------------------------
+# ICU Completed Sessions Tools (#96)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="icu_get_completed_sessions",
+    annotations=ToolAnnotations(
+        title="Get Completed Sessions (Bounded Activity Listing)",
+        read_only_hint=True,
+    ),
+)
+@audit_tool_call
+async def icu_get_completed_sessions(params: IcuGetCompletedSessionsInput, ctx: Context) -> str:
+    """List the athlete's completed sessions over a bounded date range.
+
+    Serves coach-web #164 (debrief greeting source): completed sessions the
+    coach can reference in debrief conversations, as structured data instead
+    of memory. Read-only.
+
+    Exactly one GET is issued per call against the verified Intervals.icu
+    endpoint ``GET /api/v1/athlete/{id}/activities`` (official OpenAPI spec,
+    operation ``listActivities``; query params ``oldest``, ``newest``,
+    ``limit``). The date range is bounded server-side to at most 90 days
+    (epic #82 binding condition 1) — wider ranges are rejected with an
+    explicit validation error before any network call.
+
+    The response is a whitelist-only projection: id, date, type, title,
+    duration, and ICU-provided load/TSS — never a raw activity payload dump
+    (no health or biometric values). The page size is capped (1-100) both on
+    the upstream fetch and on the returned page; the optional strict
+    activity-type filter narrows within the fetched page (the ICU activities
+    endpoint has no server-side type parameter).
+
+    Args:
+        params (IcuGetCompletedSessionsInput): Validated date range (defaults
+            to the last 7 days), optional athlete ID, optional strict
+            activity-type filter, page-size cap, and output format.
+        ctx (Context): MCP request context carrying the shared client.
+
+    Returns:
+        str: Markdown listing with a plain-language page summary, or the JSON
+        page model, or a handled ``Error ...`` string (audited at ERROR level).
+    """
+    client = _get_client_from_ctx(ctx)
+    oldest = cast(str, params.oldest)
+    newest = cast(str, params.newest)
+    try:
+        activities = await client.list_activities(
+            oldest=oldest,
+            newest=newest,
+            athlete_id=params.athlete_id,
+            limit=params.limit,
+        )
+        projected = project_completed_sessions(activities, activity_type=params.activity_type)
+        page_sessions = projected[: params.limit]
+        page = CompletedSessionsPage(
+            oldest=oldest,
+            newest=newest,
+            activity_type=(
+                params.activity_type.value if params.activity_type is not None else None
+            ),
+            fetched=len(activities),
+            returned=len(page_sessions),
+            sessions=page_sessions,
+        )
+        return format_completed_sessions(
+            page, fmt_json=(params.response_format == ResponseFormat.JSON)
+        )
+    except IntervalsAPIError as exc:
+        return redact_sensitive(f"Error fetching completed sessions: {exc}") or ""
+    except Exception as exc:  # noqa: BLE001
+        return redact_sensitive(f"Error fetching completed sessions: {exc}") or ""
 
 
 # ---------------------------------------------------------------------------

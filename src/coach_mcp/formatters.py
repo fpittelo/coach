@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING, Any, cast
 from coach_mcp.models import ResponseFormat
 
 if TYPE_CHECKING:
-    from coach_mcp.models import WellnessDayProjection, WorkoutComplianceReport
+    from coach_mcp.models import (
+        CompletedSessionsPage,
+        WellnessDayProjection,
+        WorkoutComplianceReport,
+    )
 
 
 def to_json_str(data: Any) -> str:
@@ -616,6 +620,47 @@ def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool 
         lines.append(
             f"| {event.date} | {event.name} | {event.status} | {compliance} "
             f"| {event.structure_diff} |"
+        )
+    return "\n".join(lines)
+
+
+def format_completed_sessions(page: "CompletedSessionsPage", fmt_json: bool = False) -> str:
+    """Format the bounded completed-sessions listing (``icu_get_completed_sessions``).
+
+    Both output shapes render the whitelisted page only — the raw activity
+    payload is never surfaced (epic #82 binding security condition 2). The
+    markdown shape leads with a plain-language summary of the page.
+    """
+    if fmt_json:
+        return to_json_str(page.model_dump())
+
+    if not page.sessions:
+        filter_note = f" (type: {page.activity_type})" if page.activity_type else ""
+        return f"No completed sessions found for {page.oldest} → {page.newest}{filter_note}."
+
+    summary = f"Showing {page.returned} of {page.fetched} fetched session(s)"
+    if page.activity_type:
+        summary += f", filtered to type '{page.activity_type}'"
+    summary += "."
+
+    lines = [
+        f"# Completed Sessions ({page.oldest} → {page.newest})",
+        "",
+        summary,
+        "",
+        "| Date | Session | Type | Duration | Load (TSS) |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for session in page.sessions:
+        duration = (
+            _format_duration(session.duration_seconds)
+            if session.duration_seconds is not None
+            else "-"
+        )
+        load = f"{session.load:.0f}" if session.load is not None else "-"
+        lines.append(
+            f"| {session.date} | [{session.title}](id:{session.id}) | {session.type} "
+            f"| {duration} | {load} |"
         )
     return "\n".join(lines)
 

@@ -20,6 +20,7 @@ from coach_mcp.formatters import (
     format_activities_list,
     format_activity_detail,
     format_activity_streams,
+    format_completed_sessions,
     format_events_list,
     format_fitness_summary,
     format_folders,
@@ -35,6 +36,7 @@ from coach_mcp.formatters import (
     to_json_str,
 )
 from coach_mcp.models import (
+    CompletedSessionsPage,
     CreateActivityInput,
     CreateEventInput,
     DeleteActivityInput,
@@ -50,9 +52,11 @@ from coach_mcp.models import (
     GetReadinessDashboardInput,
     GetSportSettingsInput,
     GetWellnessInput,
+    IcuActivityType,
     IcuAddSessionCommentInput,
     IcuBatchCreateEventsInput,
     IcuEventDraft,
+    IcuGetCompletedSessionsInput,
     IcuGetWellnessInput,
     IcuGetWorkoutComplianceInput,
     ListActivitiesInput,
@@ -66,6 +70,7 @@ from coach_mcp.models import (
     UpdateEventInput,
     WellnessRecordItem,
     build_workout_compliance_report,
+    project_completed_sessions,
     project_wellness_days,
 )
 from coach_mcp.server import (
@@ -74,6 +79,7 @@ from coach_mcp.server import (
     _get_client_from_ctx,
     icu_add_session_comment,
     icu_batch_create_events,
+    icu_get_completed_sessions,
     icu_get_wellness,
     icu_get_workout_compliance,
     intervals_create_activity,
@@ -167,6 +173,7 @@ def test_tools_registered():
         "icu_add_session_comment",
         "icu_batch_create_events",
         "icu_get_workout_compliance",
+        "icu_get_completed_sessions",
     ]
 
     for expected in expected_tools:
@@ -2816,3 +2823,315 @@ async def test_icu_batch_create_events_unexpected_response_shape(mock_ctx, mock_
 
     assert result.startswith("Error")
     assert "Unexpected response shape" in result
+
+
+# ---------------------------------------------------------------------------
+# ICU Completed Sessions Tool (#96)
+# ---------------------------------------------------------------------------
+
+
+def _sessions_server_activities() -> list[dict[str, Any]]:
+    """Activity fixture with raw sensor values that must never leak."""
+    return [
+        {
+            "id": "a1",
+            "name": "Zwift Tempo",
+            "type": "VirtualRide",
+            "start_date_local": "2026-10-08T09:00:00",
+            "moving_time": 3600,
+            "icu_training_load": 85,
+            "average_heartrate": 150,
+            "average_watts": 250.0,
+            "calories": 900,
+        },
+        {
+            "id": "a2",
+            "name": "Easy Run",
+            "type": "Run",
+            "start_date_local": "2026-10-09T07:00:00",
+            "moving_time": 1800,
+        },
+        {
+            "id": "a3",
+            "name": "Outdoor Ride",
+            "type": "Ride",
+            "start_date_local": "2026-10-10T10:00:00",
+            "moving_time": 5400,
+            "icu_training_load": 120,
+        },
+    ]
+
+
+def test_format_completed_sessions_markdown():
+    """The markdown page renders whitelisted fields only, layman-friendly."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=3,
+        returned=3,
+        sessions=project_completed_sessions(_sessions_server_activities()),
+    )
+    result = format_completed_sessions(page)
+
+    assert "# Completed Sessions (2026-10-04 → 2026-10-11)" in result
+    assert "Showing 3 of 3" in result
+    assert "Zwift Tempo" in result
+    assert "1h" in result  # 3600s rendered human-readable
+    assert "85" in result
+    # Raw sensor values never surface.
+    assert "150" not in result  # average_heartrate
+    assert "250.0" not in result  # average_watts
+    assert "900" not in result  # calories
+
+
+def test_format_completed_sessions_json_whitelist_only():
+    """The JSON page is the whitelisted page model exactly."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=3,
+        returned=3,
+        sessions=project_completed_sessions(_sessions_server_activities()),
+    )
+    result = format_completed_sessions(page, fmt_json=True)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "activity_type",
+        "fetched",
+        "returned",
+        "sessions",
+    }
+    assert set(parsed["sessions"][0].keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    for banned in ("average_heartrate", "average_watts", "calories"):
+        assert f'"{banned}"' not in result
+
+
+def test_format_completed_sessions_empty():
+    """An empty page renders a plain no-data message (structured empty)."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=None,
+        fetched=0,
+        returned=0,
+        sessions=[],
+    )
+    result = format_completed_sessions(page)
+    assert "No completed sessions found" in result
+
+
+def test_format_completed_sessions_empty_with_filter():
+    """An empty filtered page names the applied filter."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type="Swim",
+        fetched=3,
+        returned=0,
+        sessions=[],
+    )
+    result = format_completed_sessions(page)
+    assert "No completed sessions found" in result
+    assert "Swim" in result
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_markdown(mock_date, mock_ctx, mock_client):
+    """AC2: the tool returns the fixture-backed whitelisted session list."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert "Completed Sessions" in result
+    assert "Zwift Tempo" in result
+    assert "150" not in result  # average_heartrate never leaks
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-04", newest="2026-10-11", athlete_id=None, limit=50
+    )
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_json_whitelist_only(mock_date, mock_ctx, mock_client):
+    """AC2: JSON output is whitelist-only — no raw activity payload fields."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04", newest="2026-10-11", response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert set(parsed.keys()) == {
+        "oldest",
+        "newest",
+        "activity_type",
+        "fetched",
+        "returned",
+        "sessions",
+    }
+    assert set(parsed["sessions"][0].keys()) == {
+        "id",
+        "date",
+        "type",
+        "title",
+        "duration_seconds",
+        "load",
+    }
+    for banned in ("average_heartrate", "average_watts", "calories", "description"):
+        assert f'"{banned}"' not in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_completed_sessions_rejects_over_90_days_before_network(
+    mock_ctx, mock_client
+):
+    """AC1: a >90-day range is rejected at validation, before any network call."""
+    mock_client.list_activities = AsyncMock()
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    with pytest.raises(ValidationError) as excinfo:
+        IcuGetCompletedSessionsInput(oldest="2026-01-01", newest="2026-10-11")
+    assert "90-day maximum" in str(excinfo.value)
+    mock_client.list_activities.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_respects_page_size_cap(mock_date, mock_ctx, mock_client):
+    """AC2: pagination is respected — the page-size cap bounds the returned page."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04", newest="2026-10-11", limit=2, response_format=ResponseFormat.JSON
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    mock_client.list_activities.assert_awaited_once_with(
+        oldest="2026-10-04", newest="2026-10-11", athlete_id=None, limit=2
+    )
+    parsed = json.loads(result)
+    assert parsed["fetched"] == 3
+    assert parsed["returned"] == 2
+    assert len(parsed["sessions"]) == 2
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_type_filter_narrows_page(
+    mock_date, mock_ctx, mock_client
+):
+    """AC3: a valid enum filter keeps only the matching sessions."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type=IcuActivityType.RIDE,
+        response_format=ResponseFormat.JSON,
+    )
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    parsed = json.loads(result)
+    assert parsed["activity_type"] == "Ride"
+    assert parsed["returned"] == 1
+    assert [session["id"] for session in parsed["sessions"]] == ["a3"]
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_empty_range(mock_date, mock_ctx, mock_client):
+    """AC4: an empty range returns a structured empty result, not an error."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=[])
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert not result.startswith("Error")
+    assert "No completed sessions found" in result
+
+
+@pytest.mark.asyncio
+async def test_icu_get_completed_sessions_error(mock_ctx, mock_client):
+    """The tool follows the handled error-string convention on API failure."""
+    mock_client.list_activities = AsyncMock(
+        side_effect=IntervalsAPIError("activities upstream down", status_code=500)
+    )
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "activities upstream down" in result
+
+
+def test_format_completed_sessions_filtered_markdown():
+    """A non-empty filtered page names the applied filter in the summary."""
+    page = CompletedSessionsPage(
+        oldest="2026-10-04",
+        newest="2026-10-11",
+        activity_type="Ride",
+        fetched=3,
+        returned=1,
+        sessions=project_completed_sessions(
+            _sessions_server_activities(), activity_type=IcuActivityType.RIDE
+        ),
+    )
+    result = format_completed_sessions(page)
+
+    assert "Showing 1 of 3 fetched session(s), filtered to type 'Ride'." in result
+    assert "Outdoor Ride" in result
+    assert "Easy Run" not in result
+
+
+def test_icu_get_completed_sessions_read_only_annotation():
+    """The completed-sessions read is annotated read-only."""
+    tools = mcp._tool_manager.list_tools()
+    annotations = {t.name: t.annotations for t in tools}
+    annotation = annotations["icu_get_completed_sessions"]
+    assert isinstance(annotation, ToolAnnotations)
+    assert annotation.read_only_hint is True
+
+
+@pytest.mark.asyncio
+@patch("coach_mcp.models.date")
+async def test_icu_get_completed_sessions_unexpected_error(mock_date, mock_ctx, mock_client):
+    """An unexpected (non-API) failure follows the same handled error path."""
+    mock_date.today.return_value = date(2026, 10, 11)
+    mock_client.list_activities = AsyncMock(return_value=_sessions_server_activities())
+    mock_ctx.request_context.lifespan_state["client"] = mock_client
+
+    params = IcuGetCompletedSessionsInput(oldest="2026-10-04", newest="2026-10-11")
+    with patch(
+        "coach_mcp.server.project_completed_sessions",
+        side_effect=RuntimeError("unexpected projection failure"),
+    ):
+        result = await icu_get_completed_sessions(params, mock_ctx)
+
+    assert result.startswith("Error")
+    assert "unexpected projection failure" in result
