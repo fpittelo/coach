@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from coach_mcp.models import ResponseFormat
 
 if TYPE_CHECKING:
-    from coach_mcp.models import WellnessDayProjection
+    from coach_mcp.models import WellnessDayProjection, WorkoutComplianceReport
 
 
 def to_json_str(data: Any) -> str:
@@ -574,6 +574,49 @@ def format_workouts(workouts: list[dict[str, Any]], fmt_json: bool = False) -> s
             lines.append(f"- **Description**: {desc}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool = False) -> str:
+    """Format the planned-vs-executed compliance report (``icu_get_workout_compliance``).
+
+    Both output shapes render the whitelisted report only — the raw executed
+    activity payload is never surfaced (epic #82 binding security condition 2).
+    The markdown shape leads with a plain-language adherence summary line.
+    """
+    if fmt_json:
+        return to_json_str(report.model_dump())
+
+    if not report.events:
+        return f"No planned workouts found for {report.oldest} → {report.newest}."
+
+    if report.adherence_rate is not None:
+        summary = (
+            f"You planned {report.total_planned} workout(s) and completed "
+            f"{report.completed} — {report.adherence_rate}% adherence "
+            f"({report.missed} missed)."
+        )
+    else:
+        summary = f"{report.upcoming} planned workout(s) upcoming — nothing rateable yet."
+
+    lines = [
+        f"# Workout Compliance Report ({report.oldest} → {report.newest})",
+        "",
+        summary,
+        "",
+        "Executed workouts are paired with the planned calendar events via "
+        "Intervals.icu's native paired_event_id link; Compliance is ICU's own "
+        "adherence score for the paired activity.",
+        "",
+        "| Date | Workout | Status | Compliance (ICU) | Structure |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for event in report.events:
+        compliance = f"{event.compliance:.1f}" if event.compliance is not None else "-"
+        lines.append(
+            f"| {event.date} | {event.name} | {event.status} | {compliance} "
+            f"| {event.structure_diff} |"
+        )
     return "\n".join(lines)
 
 
