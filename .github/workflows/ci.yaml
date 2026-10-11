@@ -78,14 +78,20 @@ jobs:
           pytest -v -W error --cov=src/coach_mcp tests/
 
       - name: Run pip-audit Dependency Vulnerability Scan
-        # Project-path mode: audits the declared runtime dependencies from
-        # pyproject.toml against the PyPI vulnerability feed. Environment mode
-        # (`pip-audit --strict` with no path) would fail on the locally
-        # installed coach-mcp distribution itself, which does not exist on
-        # PyPI and is therefore reported as an unauditable dependency under
-        # --strict.
+        # Audits the LOCKED closure (uv.lock), not a fresh resolution:
+        # project-path mode (`pip-audit --strict .`) re-resolves from
+        # pyproject.toml at audit time and audited mcp 2.3.0 / pyjwt 2.15.1
+        # while the lock carried mcp 2.1.1 / pyjwt 2.13.0, so 14 PYSEC
+        # advisories against pyjwt 2.13.0 passed unnoticed (closure-drift
+        # gap, #105). --frozen pins the export to the committed lock;
+        # --no-emit-project excludes coach-mcp itself (not on PyPI, would
+        # fail --strict); the OSV source covers PYSEC/GHSA advisories beyond
+        # the PyPI feed. Export goes to $RUNNER_TEMP so the workspace stays
+        # clean for the Docker build step.
         run: |
-          pip-audit --strict .
+          python -m pip install uv
+          uv export --frozen --format requirements-txt --no-hashes --no-emit-project -o "$RUNNER_TEMP/locked-requirements.txt"
+          pip-audit --strict -s osv --no-deps -r "$RUNNER_TEMP/locked-requirements.txt"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
