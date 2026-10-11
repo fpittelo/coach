@@ -253,6 +253,7 @@ def audit_tool_call(func: F) -> F:
 
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        """Log the invocation with redacted args, then return the result or re-raise."""
         tool_name = func.__name__
         started = time.perf_counter()
         ctx = _find_ctx(args, kwargs)
