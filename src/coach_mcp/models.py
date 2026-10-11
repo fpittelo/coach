@@ -1216,6 +1216,206 @@ def build_workout_compliance_report(
 
 
 # ---------------------------------------------------------------------------
+# ICU Completed Sessions Models (#96)
+# ---------------------------------------------------------------------------
+
+#: Maximum date-range span (in days) the completed-sessions read may cover per
+#: call. Epic #82 binding security condition 1 — same bound as the wellness and
+#: compliance reads; per issue #96 AC1 a wider range is REJECTED with an
+#: explicit validation error (not clamped) before any network call.
+ICU_SESSIONS_MAX_SPAN_DAYS = 90
+
+#: Default look-back window (in days) — the weekly debrief cadence of the
+#: consuming story (coach-web #164 greeting source).
+ICU_SESSIONS_DEFAULT_DAYS = 7
+
+#: Maximum page size (activities per call) for the completed-sessions read.
+#: Bounds the tool payload regardless of how many activities the range holds.
+ICU_SESSIONS_MAX_PAGE_SIZE = 100
+
+
+class IcuActivityType(StrEnum):
+    """Strict activity-type filter for ``icu_get_completed_sessions``.
+
+    Core endurance/coaching types from the Intervals.icu ``Activity.type``
+    enum (official OpenAPI spec, ``GET https://intervals.icu/api/v1/docs``).
+    The filter is strict per issue #96 AC3 / #90 enum gating: values outside
+    this enum are rejected at validation with field-level errors — no loose
+    strings or booleans.
+    """
+
+    RIDE = "Ride"
+    VIRTUAL_RIDE = "VirtualRide"
+    RUN = "Run"
+    SWIM = "Swim"
+    WEIGHT_TRAINING = "WeightTraining"
+    WORKOUT = "Workout"
+    OTHER = "Other"
+
+
+class IcuGetCompletedSessionsInput(BaseToolModel):
+    """Input parameters for the bounded completed-sessions read.
+
+    The requested date range is validated server-side before any network
+    call: dates must be real calendar dates, ``oldest`` must be on or before
+    ``newest``, and the span is hard-capped at
+    :data:`ICU_SESSIONS_MAX_SPAN_DAYS` (90) days — wider ranges are rejected
+    with an explicit validation error (issue #96 AC1).
+    """
+
+    oldest: str | None = Field(
+        default=None,
+        description=(
+            "Oldest date (YYYY-MM-DD). Defaults to 7 days ago. Ranges wider "
+            "than 90 days are rejected server-side."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    newest: str | None = Field(
+        default=None,
+        description="Newest date (YYYY-MM-DD). Defaults to today.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    athlete_id: str | None = Field(
+        default=None,
+        description="Athlete ID ('0' or None for self, or 'iXXXXX' for coached athlete).",
+        pattern=r"^(0|i\d+)$",
+    )
+    activity_type: IcuActivityType | None = Field(
+        default=None,
+        description=(
+            "Optional strict activity-type filter (e.g. 'Ride', 'VirtualRide', "
+            "'Run', 'Swim', 'WeightTraining'). Invalid values are rejected."
+        ),
+    )
+    limit: int = Field(
+        default=50,
+        ge=1,
+        le=ICU_SESSIONS_MAX_PAGE_SIZE,
+        description="Page-size cap: maximum sessions returned per call (1-100).",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format: 'markdown' or 'json'.",
+    )
+
+    @model_validator(mode="after")
+    def _set_and_bound_dates(self) -> "IcuGetCompletedSessionsInput":
+        """Apply smart defaults, validate calendar dates, and bound the span.
+
+        Raises:
+            ValueError: If either date is not a real calendar date, if
+                ``oldest`` is after ``newest``, or if the span exceeds the
+                90-day maximum.
+        """
+        if self.newest is None:
+            self.newest = date.today().isoformat()
+        if self.oldest is None:
+            self.oldest = (date.today() - timedelta(days=ICU_SESSIONS_DEFAULT_DAYS)).isoformat()
+
+        newest_date = _parse_iso_date(self.newest, "newest")
+        oldest_date = _parse_iso_date(self.oldest, "oldest")
+        if oldest_date > newest_date:
+            raise ValueError("oldest must be on or before newest")
+
+        span_days = (newest_date - oldest_date).days
+        if span_days > ICU_SESSIONS_MAX_SPAN_DAYS:
+            raise ValueError(
+                f"date range spans {span_days} days, exceeding the "
+                f"{ICU_SESSIONS_MAX_SPAN_DAYS}-day maximum for completed-session reads"
+            )
+        return self
+
+
+class CompletedSessionSummary(BaseToolModel):
+    """Whitelisted summary of one completed session (``icu_get_completed_sessions``).
+
+    Epic #82 binding security condition 2: summary fields only — id, date,
+    type, title, duration, and ICU-provided load/TSS. Never a raw pass-through
+    of the activity payload: no heart rate, power, cadence, calories, sensor
+    streams, or athlete notes reach tool output.
+    """
+
+    id: str = Field(..., description="Intervals.icu activity ID.")
+    date: str = Field(..., description="Session date (YYYY-MM-DD, from start_date_local).")
+    type: str = Field(..., description="Activity type (e.g. 'Ride', 'VirtualRide').")
+    title: str = Field(..., description="Session title.")
+    duration_seconds: float | None = Field(default=None, description="Moving duration in seconds.")
+    load: float | None = Field(
+        default=None, description="ICU-provided training load (TSS) when available."
+    )
+
+
+class CompletedSessionsPage(BaseToolModel):
+    """Whitelisted, page-bounded listing of completed sessions.
+
+    ``fetched`` is the number of raw activities Intervals.icu returned for the
+    range (the API page); ``returned`` is the number of whitelisted sessions
+    in this page after the optional type filter and the page-size cap. When
+    ``fetched`` reaches the requested page size, more sessions may exist
+    beyond the page.
+    """
+
+    oldest: str = Field(..., description="Reported range start (YYYY-MM-DD).")
+    newest: str = Field(..., description="Reported range end (YYYY-MM-DD).")
+    activity_type: str | None = Field(
+        default=None, description="Applied activity-type filter (None = all types)."
+    )
+    fetched: int = Field(
+        ...,
+        description="Raw activities fetched from Intervals.icu for the range.",
+        ge=0,
+    )
+    returned: int = Field(
+        ...,
+        description="Whitelisted sessions in this page (after filter and cap).",
+        ge=0,
+    )
+    sessions: list[CompletedSessionSummary] = Field(
+        default_factory=list, description="Whitelisted session summaries."
+    )
+
+
+def project_completed_sessions(
+    records: list[dict[str, Any]],
+    activity_type: IcuActivityType | None = None,
+) -> list[CompletedSessionSummary]:
+    """Project raw Intervals.icu activities onto the completed-session whitelist.
+
+    This is the security boundary for the completed-sessions read: every field
+    not present on :class:`CompletedSessionSummary` is discarded here, so raw
+    activity payload content (heart rate, power, calories, athlete notes,
+    sensor streams, unknown future fields) can never reach tool output.
+
+    Args:
+        records: Raw activities as returned by the ICU activities list.
+        activity_type: Optional strict type filter; when set, only activities
+            whose ``type`` equals the enum value are projected.
+
+    Returns:
+        Whitelisted session summaries in the upstream (descending date) order.
+    """
+    projected: list[CompletedSessionSummary] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        raw_type = str(record.get("type", ""))
+        if activity_type is not None and raw_type != activity_type.value:
+            continue
+        projected.append(
+            CompletedSessionSummary(
+                id=str(record.get("id", "")),
+                date=str(record.get("start_date_local", ""))[:10],
+                type=raw_type,
+                title=str(record.get("name", "Untitled")),
+                duration_seconds=_numeric_or_none(record.get("moving_time")),
+                load=_numeric_or_none(record.get("icu_training_load")),
+            )
+        )
+    return projected
+
+
+# ---------------------------------------------------------------------------
 # Planned Workouts & Events Models
 # ---------------------------------------------------------------------------
 
