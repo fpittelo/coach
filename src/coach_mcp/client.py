@@ -33,6 +33,7 @@ class IntervalsAPIError(Exception):
     def __init__(
         self, message: str, status_code: int | None = None, response_text: str | None = None
     ):
+        """Store the error message plus optional HTTP status and raw response body."""
         super().__init__(message)
         self.status_code = status_code
         self.response_text = response_text
@@ -74,6 +75,7 @@ class IntervalsClient:
         cache_ttl: int | None = None,
         cache_ttl_volatile: int | None = None,
     ) -> None:
+        """Bind api_key/athlete_id/base_url, falling back to ``settings`` when ``None``."""
         self.api_key = api_key or settings.intervals_api_key
         self.default_athlete_id = athlete_id or settings.intervals_athlete_id
         self.base_url = (base_url or settings.intervals_base_url).rstrip("/")
@@ -214,6 +216,7 @@ class IntervalsClient:
                 raise IntervalsAPIError(f"Connection timeout or network failure: {exc}") from exc
 
     def _resolve_athlete(self, athlete_id: str | None) -> str:
+        """Prefer a non-blank explicit ``athlete_id``; otherwise use the configured default."""
         return (
             athlete_id if athlete_id is not None and athlete_id.strip() else self.default_athlete_id
         )
