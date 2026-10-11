@@ -61,9 +61,31 @@ jobs:
         run: |
           ruff check .
 
+      - name: Run Black Formatter Check
+        run: |
+          black --check .
+
+      - name: Run isort Import Order Check
+        run: |
+          isort --check-only .
+
+      - name: Run MyPy Strict Type Check
+        run: |
+          mypy --strict src/coach_mcp
+
       - name: Run Pytest Test Suite
         run: |
-          pytest -v --cov=src/coach_mcp tests/
+          pytest -v -W error --cov=src/coach_mcp tests/
+
+      - name: Run pip-audit Dependency Vulnerability Scan
+        # Project-path mode: audits the declared runtime dependencies from
+        # pyproject.toml against the PyPI vulnerability feed. Environment mode
+        # (`pip-audit --strict` with no path) would fail on the locally
+        # installed coach-mcp distribution itself, which does not exist on
+        # PyPI and is therefore reported as an unauditable dependency under
+        # --strict.
+        run: |
+          pip-audit --strict .
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
