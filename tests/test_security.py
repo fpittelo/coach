@@ -296,6 +296,27 @@ def test_no_false_positives_on_safe_text():
 # ---------------------------------------------------------------------------
 
 
+def test_redact_structure_redacts_coach_mcp_auth_token_key():
+    """The #61 bearer-token config field name is redacted in structured data."""
+    payload = {
+        "coach_mcp_auth_token": "secret-bearer-value",
+        "COACH_MCP_AUTH_TOKEN": "secret-bearer-value",
+        "keep": "visible",
+    }
+    result = redact_structure(payload)
+    assert result["coach_mcp_auth_token"] == "[REDACTED]"
+    assert result["COACH_MCP_AUTH_TOKEN"] == "[REDACTED]"
+    assert result["keep"] == "visible"
+
+
+def test_redact_sensitive_redacts_coach_mcp_auth_token_in_json_string():
+    """A JSON blob embedding the #61 token field is redacted in prose too."""
+    text = 'config={"coach_mcp_auth_token": "secret-bearer-value"} loaded'
+    result = redact_sensitive(text)
+    assert "secret-bearer-value" not in result
+    assert "[REDACTED]" in result
+
+
 def test_redact_structure_redacts_sensitive_keys():
     """Values stored under secret-bearing keys are replaced wholesale."""
     payload = {

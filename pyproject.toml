@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
     "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.40.0",
 ]
 
 [project.optional-dependencies]
