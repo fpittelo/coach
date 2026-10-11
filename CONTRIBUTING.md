@@ -19,12 +19,22 @@ uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# Local pre-flight (mirrors the CI gate)
+# Local pre-flight (mirrors the CI gate in .github/workflows/ci.yaml)
 ruff check .
-pytest -v --cov=src/coach_mcp tests/
+black --check .
+isort --check-only .
+mypy --strict src/coach_mcp
+pytest -v -W error --cov=src/coach_mcp tests/
 
-# Recommended hygiene (dev dependencies; enforced locally, not yet in CI)
-black --check . && isort --check-only . && mypy --strict src/coach_mcp
+# Dependency audit against the locked artifact (uv.lock), as in CI
+uv export --frozen --format requirements-txt --no-hashes --no-emit-project -o /tmp/locked-requirements.txt
+pip-audit --strict -s osv --no-deps -r /tmp/locked-requirements.txt
+
+# Secret scanning (CI runs gitleaks diff-scoped on every push and PR)
+gitleaks detect --redact
+
+# OCI image build gate (CI builds the image with push disabled)
+docker build -t coach-mcp .
 ```
 
 ### MCP server specifics
