@@ -626,8 +626,14 @@ async def test_batch_create_events_both_phases_and_outcomes_audited(audit_record
     tool_calls = [
         e for e in entries if e["event"] == "tool_call" and e["tool"] == "icu_batch_create_events"
     ]
+    # Both phase entries carry a confirm_token argument (None for the preview
+    # phase); the #18 redaction layer replaces the value under the sensitive
+    # key wholesale — including None — so every entry must show the
+    # placeholder (#90 Item 1, from the PR #100 review).
     assert len(tool_calls) == 2  # preview phase + execute phase
     assert all(e["status"] == "success" for e in tool_calls)
+    for entry in tool_calls:
+        assert entry["arguments"]["confirm_token"] == "[REDACTED]"
 
     outcome_entries = [e for e in entries if e["event"] == "batch_outcome"]
     assert len(outcome_entries) == 1

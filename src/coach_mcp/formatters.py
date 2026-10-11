@@ -582,6 +582,22 @@ def format_workouts(workouts: list[dict[str, Any]], fmt_json: bool = False) -> s
     return "\n".join(lines)
 
 
+def _escape_md_cell(text: str) -> str:
+    """Escape markdown-significant characters for safe table-cell interpolation.
+
+    Event and session titles come from Intervals.icu and are interpolated into
+    markdown table cells (#90 Item 2). An unescaped ``|`` or newline breaks the
+    table structure, and unescaped ``[``/``]`` let a hostile title inject link
+    or image markdown into the agent's output. Backslashes are escaped first so
+    the escape sequences themselves render literally.
+    """
+    escaped = text.replace("\\", "\\\\")
+    escaped = escaped.replace("|", "\\|")
+    escaped = escaped.replace("[", "\\[")
+    escaped = escaped.replace("]", "\\]")
+    return escaped.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+
+
 def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool = False) -> str:
     """Format the planned-vs-executed compliance report (``icu_get_workout_compliance``).
 
@@ -619,7 +635,7 @@ def format_workout_compliance(report: "WorkoutComplianceReport", fmt_json: bool 
     for event in report.events:
         compliance = f"{event.compliance:.1f}" if event.compliance is not None else "-"
         lines.append(
-            f"| {event.date} | {event.name} | {event.status} | {compliance} "
+            f"| {event.date} | {_escape_md_cell(event.name)} | {event.status} | {compliance} "
             f"| {event.structure_diff} |"
         )
     return "\n".join(lines)
@@ -660,8 +676,8 @@ def format_completed_sessions(page: "CompletedSessionsPage", fmt_json: bool = Fa
         )
         load = f"{session.load:.0f}" if session.load is not None else "-"
         lines.append(
-            f"| {session.date} | [{session.title}](id:{session.id}) | {session.type} "
-            f"| {duration} | {load} |"
+            f"| {session.date} | [{_escape_md_cell(session.title)}](id:{session.id}) "
+            f"| {session.type} | {duration} | {load} |"
         )
     return "\n".join(lines)
 
@@ -672,7 +688,7 @@ def _trend_direction_phrase(delta: float) -> str:
         return "rising steadily"
     if delta > 2:
         return "rising slightly"
-    if delta < -5:
+    if delta <= -5:
         return "declining steadily"
     if delta < -2:
         return "declining slightly"
